@@ -25,16 +25,50 @@ import requests
 import plotly.express as px
 import plotly.graph_objects as go
 from collections import defaultdict
+import pytz
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 
 # ============================================================
-# KONFIGURASI
+# KONFIGURASI — baca dari environment variable (Railway)
+# Fallback ke string kosong jika tidak ditemukan
 # ============================================================
-FINNHUB_API_KEY = r"d7j0adhr01qn2qavlnn0d7j0adhr01qn2qavlnng"
-TELEGRAM_TOKEN  = "8515068517:AAGqJnRX-9ccCKN9jcopGyi9tVojZyHZDYo"
-TELEGRAM_CHAT   = "936786417"
-STATE_FILE      = "ats_state.json"   # persistensi cybernetic + signal lock
+FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "")
+TELEGRAM_TOKEN  = os.environ.get("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT   = os.environ.get("TELEGRAM_CHAT", "")
+STATE_FILE      = "ats_state.json"
 JOURNAL_FILE    = "journal.csv"
 ACTIVE_FILE     = "active_trades.csv"
+
+# ============================================================
+# TIMEZONE & JADWAL IDX
+# ============================================================
+WIB = pytz.timezone("Asia/Jakarta")
+
+# Jadwal scan otomatis (Senin–Jumat, jam IDX):
+# 09:05 — Pre-market open (5 menit setelah buka, data sudah masuk)
+# 11:30 — Tengah sesi 1
+# 13:35 — Awal sesi 2 (setelah jeda ishoma)
+# 15:00 — Menjelang closing (last chance entry)
+SCAN_SCHEDULE = [
+    {"hour": 9,  "minute": 5,  "label": "Pre-Open"},
+    {"hour": 11, "minute": 30, "label": "Mid Sesi 1"},
+    {"hour": 13, "minute": 35, "label": "Open Sesi 2"},
+    {"hour": 15, "minute": 0,  "label": "Pre-Closing"},
+]
+
+def is_market_open() -> bool:
+    """Cek apakah sekarang dalam jam bursa IDX (Senin–Jumat, 09:00–15:30 WIB)"""
+    now_wib  = datetime.now(WIB)
+    weekday  = now_wib.weekday()   # 0=Senin, 6=Minggu
+    if weekday >= 5:               # Sabtu/Minggu
+        return False
+    market_open  = now_wib.replace(hour=9,  minute=0,  second=0, microsecond=0)
+    market_close = now_wib.replace(hour=15, minute=30, second=0, microsecond=0)
+    return market_open <= now_wib <= market_close
+
+def get_wib_now() -> str:
+    return datetime.now(WIB).strftime("%H:%M:%S WIB")
 
 # ============================================================
 # TELEGRAM
@@ -845,14 +879,232 @@ ATS SuperEngine V3.0
         st.success(f"✅ Alert Telegram terkirim: {', '.join(sent)}")
 
 # ============================================================
-# UI LAYOUT
+# AUTO SCAN — Background (tanpa Streamlit UI context)
+# Dijalankan oleh scheduler saat jam IDX
 # ============================================================
+def auto_scan_background():
+    """
+    Versi run_scanner yang berjalan di background thread.
+    Tidak menggunakan st.* (tidak ada UI context).
+    Hanya scan + kirim Telegram jika ada sinyal.
+    """
+    if not is_market_open():
+        return   # Jangan scan di luar jam bursa
+
+    now_label = datetime.now(WIB).strftime("%H:%M WIB")
+    send_telegram(f"🤖 ATS AutoScan dimulai — {now_label}")
+
+    try:
+        # Load data
+        raw = yf.download(
+            tickers=ISSI_UNIVERSE,
+            period="6mo", interval="1d",
+            group_by="ticker", progress=False, auto_adjust=True,
+        )
+        market = {}
+        for s in ISSI_UNIVERSE:
+            try:
+                df = raw[s].dropna()
+                if len(df) < 60: continue
+                if df["Close"].squeeze().iloc[-1] <= 0: continue
+                if df["Volume"].squeeze().tail(5).mean() <= 0: continue
+                market[s] = df
+            except Exception:
+                continue
+
+        if not market:
+            send_telegram("⚠️ ATS AutoScan: Gagal load market data.")
+            return
+
+        # Load state dari file
+        _state   = load_state()
+        cy_params = _state.get("cybernetic_params", DEFAULT_CYBER.copy())
+        sig_lock  = _state.get("signal_lock", {})
+
+        regime = detect_market_regime(market)
+
+        sector_power = sector_momentum(market, SECTOR_MAP)
+        positive_sectors = {k for k, v in sector_power.items() if v > 0}
+
+        candidates = []
+        for ticker, df in market.items():
+            if ticker not in ISSI_UNIVERSE: continue
+            try:
+                sector = get_sector(ticker)
+                if sector not in positive_sectors: continue
+
+                rsi_ok, rsi_value = rsi_gate(df)
+                if not rsi_ok: continue
+
+                ema_ok, last_price, ema_val = ema_trend_filter(df)
+                atr    = calculate_atr(df)
+                entry  = last_price
+                sl     = calculate_sl_atr(entry, atr)
+                target = find_target(df, entry)
+                rr     = risk_reward(entry, sl, target)
+
+                momentum = momentum_confirmation(df)
+                accum    = accumulation_phase(df)
+                bandar   = bandar_detection(df)
+                breakout = breakout_confirmation(df)
+                ft       = follow_through(df)
+                timing   = entry_timing(df)
+
+                if bandar < 2 or breakout == "WAIT": continue
+
+                intraday = intraday_confirm(ticker)
+                prob     = runner_probability(df)
+                runner   = runner_prediction(df)
+                quality  = pullback_quality(df)
+                liq_raw  = liquidity_trap(df)
+                liq_str  = "🔴 TRAP" if liq_raw == "TRAP" else "🟢 OK"
+
+                conf_count, _, conf_passed = confluence_check(
+                    momentum, accum, bandar, breakout, rr, ema_ok
+                )
+                if not conf_passed: continue
+                if rr < 1.8: continue
+
+                score = calculate_score(prob, runner, quality, rr, liq_str, bandar)
+                score += momentum*0.8 + accum*0.9 + ft*0.7 + intraday*0.5
+                if momentum == 2: score = min(100, score + 1)
+                if ft == 2:       score = min(100, score + 1)
+                if last_price > ema_val * 1.01: score = min(100, score + 1)
+
+                lot = position_sizing(800_000, 0.02, entry, sl, atr)
+
+                candidates.append({
+                    "Ticker": ticker.replace(".JK", ""),
+                    "Sector": sector, "Score": round(score, 2),
+                    "RR": round(rr, 1), "Confluence": conf_count,
+                    "RSI": round(rsi_value, 1), "Breakout": breakout,
+                    "BandarScore": bandar, "Momentum": momentum,
+                    "Accumulation": accum, "Timing": timing,
+                    "Entry": idr(entry), "SL": idr(sl),
+                    "Target": idr(target), "Lot": lot, "ATR": round(atr, 0),
+                })
+            except Exception:
+                continue
+
+        if not candidates:
+            send_telegram(f"📭 ATS AutoScan {now_label}: Tidak ada kandidat hari ini.")
+            return
+
+        thresholds = get_dynamic_thresholds([c["Score"] for c in candidates])
+        scan_df    = pd.DataFrame(candidates).sort_values("Score", ascending=False)
+        scan_df["Action"] = scan_df.apply(entry_system, axis=1)
+        scan_df = scan_df[scan_df["Action"] != "❌ SKIP"].head(5)
+
+        # Kirim alert per sinyal kuat
+        now_ts   = time.time()
+        lock_time = 3600
+        sent_any  = False
+
+        for _, row in scan_df.iterrows():
+            tkr    = row["Ticker"]
+            action = row.get("Action", "")
+            if action not in ("🔥 EXECUTE NOW", "✅ EXECUTE"): continue
+            last_t = sig_lock.get(tkr, 0)
+            if now_ts - last_t < lock_time: continue
+
+            msg = f"""
+🤖 ATS AUTO-SCAN — {now_label}
+
+Ticker     : {tkr}
+Action     : {action}
+Score      : {row.get('Score', 0):.1f}
+RR         : {row.get('RR', 0):.1f}
+Confluence : {row.get('Confluence', 0)}/6
+RSI        : {row.get('RSI', 0):.1f}
+Breakout   : {row.get('Breakout', '-')}
+Regime     : {regime}
+Sector     : {row.get('Sector', '-')}
+
+Entry   : {row.get('Entry', '-')}
+SL      : {row.get('SL', '-')}
+Target  : {row.get('Target', '-')}
+Lot     : {row.get('Lot', '-')}
+
+{'⚡ LANGSUNG EKSEKUSI' if 'EXECUTE NOW' in action else '✅ TUNGGU KONFIRMASI'}
+⚠️ No FOMO. Gunakan SL.
+
+ATS SuperEngine V3.0
+            """.strip()
+
+            send_telegram(msg)
+            sig_lock[tkr] = now_ts
+            sent_any = True
+
+        # Update signal lock ke file
+        try:
+            with open(STATE_FILE, "r") as f:
+                st_data = json.load(f)
+        except Exception:
+            st_data = {}
+        st_data["signal_lock"] = sig_lock
+        with open(STATE_FILE, "w") as f:
+            json.dump(st_data, f, indent=2)
+
+        if not sent_any:
+            send_telegram(
+                f"📊 ATS AutoScan {now_label}: {len(scan_df)} kandidat ditemukan "
+                f"tapi belum ada sinyal EXECUTE (dalam lock period)."
+            )
+
+    except Exception as e:
+        send_telegram(f"❌ ATS AutoScan ERROR: {str(e)[:200]}")
+
+# ============================================================
+# SCHEDULER — Jalankan sekali saja (pakai st.cache_resource)
+# ============================================================
+@st.cache_resource
+def start_scheduler():
+    scheduler = BackgroundScheduler(timezone=WIB)
+
+    for sched in SCAN_SCHEDULE:
+        scheduler.add_job(
+            func=auto_scan_background,
+            trigger=CronTrigger(
+                day_of_week="mon-fri",   # Senin–Jumat saja
+                hour=sched["hour"],
+                minute=sched["minute"],
+                timezone=WIB,
+            ),
+            id=f"scan_{sched['label'].replace(' ', '_')}",
+            name=f"ATS Scan {sched['label']}",
+            replace_existing=True,
+            misfire_grace_time=120,      # toleransi 2 menit keterlambatan
+        )
+
+    scheduler.start()
+    return scheduler
+
+# Aktifkan scheduler saat app pertama kali diload
+_scheduler = start_scheduler()
+
+
 st.set_page_config(layout="wide", page_title="ATS SuperEngine V3.0")
+
+# Hitung jadwal scan berikutnya
+def next_scan_label() -> str:
+    now_wib = datetime.now(WIB)
+    if now_wib.weekday() >= 5:
+        return "Senin 09:05 WIB"
+    for sched in SCAN_SCHEDULE:
+        t = now_wib.replace(hour=sched["hour"], minute=sched["minute"], second=0)
+        if now_wib < t:
+            return f"{sched['hour']:02d}:{sched['minute']:02d} WIB ({sched['label']})"
+    return "Besok 09:05 WIB"
 
 col_title, col_info = st.columns([3, 1])
 with col_title:
     st.title("ATS SuperEngine V3.0")
-    st.caption(f"Market clock: {datetime.now().strftime('%H:%M:%S WIB')}  |  Regime: {st.session_state.get('last_regime', '-')}")
+    market_status = "🟢 BUKA" if is_market_open() else "🔴 TUTUP"
+    st.caption(
+        f"🕐 {get_wib_now()}  |  Bursa IDX: {market_status}  |  "
+        f"Regime: {st.session_state.get('last_regime', '-')}  |  "
+        f"⏰ Auto-scan berikutnya: **{next_scan_label()}**"
+    )
 with col_info:
     cp = st.session_state.cybernetic_params
     st.metric("Min Score (Adaptif)", cp["min_score"])
