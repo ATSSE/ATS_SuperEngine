@@ -1,0 +1,76 @@
+import pandas as pd
+
+
+def liquidity_trap(df):
+
+    close = df["Close"]
+    low = df["Low"]
+    vol = df["Volume"]
+
+    last = close.iloc[-1]
+    prev = close.iloc[-2]
+
+    last_low = low.iloc[-1]
+    low5 = low.tail(5).min()
+
+    avg_vol = vol.tail(20).mean()
+    last_vol = vol.iloc[-1]
+
+    if last_low < low5 and last > prev and last_vol > avg_vol * 1.5:
+        return True
+
+    return False
+
+
+def runner_probability(df):
+
+    close = df["Close"]
+    high = df["High"]
+    vol = df["Volume"]
+
+    last = close.iloc[-1]
+    prev = close.iloc[-2]
+
+    momentum = (last - prev) / prev
+
+    avg_vol = vol.tail(20).mean()
+    last_vol = vol.iloc[-1]
+
+    prob = 20
+
+    # momentum
+
+    if momentum > 0.03:
+        prob += 25
+    elif momentum > 0.02:
+        prob += 18
+    elif momentum > 0.01:
+        prob += 10
+
+    # momentum acceleration
+
+    m1 = (close.iloc[-1] - close.iloc[-2]) / close.iloc[-2]
+    m2 = (close.iloc[-2] - close.iloc[-3]) / close.iloc[-3]
+    m3 = (close.iloc[-3] - close.iloc[-4]) / close.iloc[-4]
+
+    if m1 > m2 and m2 > m3:
+        prob += 15
+
+    # volume expansion
+
+    if last_vol > avg_vol * 2:
+        prob += 25
+    elif last_vol > avg_vol * 1.5:
+        prob += 15
+
+    # breakout pressure
+
+    if last > high.tail(20).max():
+        prob += 20
+
+    # liquidity trap filter
+
+    if liquidity_trap(df):
+        prob -= 25
+
+    return max(min(prob, 100), 0)

@@ -1,0 +1,4 @@
+Ticker,Entry,SL,Target,RR,Lot,Time,Breakout,BandarScore,BUY,Sector,Probability,RunnerScore,PullbackQuality,Liquidity,PullbackZone,Momentum,Accumulation,Score,Status,EntryTime,Date,Timing,INTRA,FT,Decision
+SIMP,635.0,609.0,698.0,2.5,6.0,,WEAK,2.0,True,Plantation,20.0,60.0,STRONG,🟢 OK,599 - 603,1.0,2.0,92.0,OPEN,2026-03-31 10:13:48.039003,2026-03-31,,,,
+LSIP,1.55,1.488,1.705,2.5,2.0,,VALID,4.0,True,Plantation,85.0,80.0,STRONG,🟢 OK,1.390 - 1.461,2.0,2.0,173.0,OPEN,2026-04-14 09:09:01.306766,2026-04-14,🔥 EXECUTE NOW,0.0,2.0,🔥 EXECUTE NOW
+LPPF,1.95,1.872,2.145,2.5,2.0,,VALID,4.0,True,Consumer,85.0,50.0,STRONG,🟢 OK,1.847 - 1.851,2.0,3.0,168.0,OPEN,2026-04-14 09:09:10.781956,2026-04-14,🔥 EXECUTE NOW,0.0,2.0,🔥 EXECUTE NOW

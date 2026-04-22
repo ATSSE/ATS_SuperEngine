@@ -1,0 +1,12 @@
+{
+  "cybernetic_params": {
+    "min_score": 70,
+    "execute_now_threshold": 85,
+    "min_rr": 1.8,
+    "last_adjust_date": null,
+    "adjustment_history": []
+  },
+  "signal_lock": {
+    "DMAS": 1776839385.1415398
+  }
+}
