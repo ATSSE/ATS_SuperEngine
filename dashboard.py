@@ -1382,6 +1382,8 @@ with tabs[2]:
         if balance_input != st.session_state.balance:
             st.session_state.balance = balance_input
             st.success("✅ Balance diperbarui")
+            time.sleep(0.5)   # beri waktu success message tampil sebentar
+            st.rerun()        # refresh seluruh halaman → Trading Desk ikut update
 
     st.markdown("---")
 
