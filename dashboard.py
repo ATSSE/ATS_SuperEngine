@@ -528,7 +528,7 @@ if "sector_table"       not in st.session_state: st.session_state.sector_table  
 if "dynamic_thresholds" not in st.session_state: st.session_state.dynamic_thresholds = None
 if "last_regime"        not in st.session_state: st.session_state.last_regime        = "-"
 if "debug_log"          not in st.session_state: st.session_state.debug_log          = []
-if "top_n"              not in st.session_state: st.session_state.top_n              = 5   # [I1]
+TOP_N_RESULTS = 5   # Fixed: selalu tampilkan 5 kandidat terbaik siap eksekusi
 
 # ============================================================
 # IMPORTS ENGINE & CONFIG  [F4] dead imports dihapus
@@ -539,7 +539,6 @@ from engine.pullback_quality_engine import pullback_quality
 from engine.sector_engine         import sector_momentum
 from engine.liquidity_engine      import liquidity_trap
 from engine.regime_engine         import detect_market_regime
-from modules.howto                import show_howto
 from config.universe              import ISSI_UNIVERSE, SECTOR_MAP, get_sector
 
 # ============================================================
@@ -738,7 +737,7 @@ def run_scanner():
 
     scan_df, debug_df, thresholds, regime = scan_core(
         market, st.session_state.balance,
-        top_n=st.session_state.top_n, show_progress=True
+        top_n=TOP_N_RESULTS, show_progress=True
     )
 
     st.session_state.last_regime        = regime
@@ -977,7 +976,216 @@ tabs = st.tabs(["📖 HOW TO USE", "📊 TRADING DESK", "💼 ACCOUNT", "📋 RE
 # TAB 0 — HOW TO USE
 # ─────────────────────────────────────────────────────────────
 with tabs[0]:
-    show_howto()
+    st.markdown("## 📖 Panduan Penggunaan ATS SuperEngine V4.0")
+    st.markdown("#### *Scanner Saham Syariah Otomatis — Mudah, Disiplin, Berkah*")
+    st.markdown("---")
+
+    # APA ITU ATS
+    st.markdown("### 🤖 Apa itu ATS SuperEngine?")
+    st.info(
+        "ATS (Automated Trading Scanner) adalah sistem yang **secara otomatis memindai "
+        "98 saham syariah ISSI** setiap hari kerja dan memberitahu kamu saham mana yang "
+        "layak dibeli hari ini. Kamu tidak perlu analisis manual — sistem sudah mengerjakan "
+        "semuanya dan mengirim notifikasi langsung ke **Telegram HP** kamu."
+    )
+    st.markdown("---")
+
+    # CARA KERJA
+    st.markdown("### ⚙️ Cara Kerja Sistem")
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.markdown("**1️⃣ Scan Otomatis**")
+        st.markdown("Setiap Senin–Jumat, 98 saham syariah dipindai di **4 waktu** berbeda setiap harinya")
+    with c2:
+        st.markdown("**2️⃣ Filter 5 Lapis**")
+        st.markdown("Setiap saham difilter ketat: Sektor → RSI → Bandar → Confluence → Risk/Reward")
+    with c3:
+        st.markdown("**3️⃣ Scoring 0–100**")
+        st.markdown("Saham yang lolos diberi nilai. Hanya **5 terbaik** yang ditampilkan setiap hari")
+    with c4:
+        st.markdown("**4️⃣ Notif Telegram**")
+        st.markdown("Sinyal kuat dikirim otomatis ke HP kamu. Tidak perlu buka laptop sama sekali")
+    st.markdown("---")
+
+    # JADWAL
+    st.markdown("### ⏰ Jadwal Auto-Scan Harian")
+    st.markdown(
+        "Sistem berjalan **otomatis di server** setiap hari Senin–Jumat "
+        "termasuk hari libur nasional IDX yang sudah diprogram. "
+        "Kamu tidak perlu melakukan apapun."
+    )
+    j1, j2, j3, j4 = st.columns(4)
+    j1.success("**09:05 WIB**\n\nPre-Open\n\n*Segera setelah bursa buka*")
+    j2.success("**11:30 WIB**\n\nMid Sesi 1\n\n*Tengah sesi pagi*")
+    j3.success("**13:35 WIB**\n\nOpen Sesi 2\n\n*Setelah jeda ishoma*")
+    j4.success("**15:00 WIB**\n\nPre-Closing\n\n*Peluang terakhir hari ini*")
+    st.markdown("---")
+
+    # SINYAL
+    st.markdown("### 📊 Arti Sinyal di Kolom Action")
+    a1, a2, a3, a4 = st.columns(4)
+    with a1:
+        st.error("🔥 **EXECUTE NOW**\n\nSinyal **terkuat**. Semua indikator hijau sempurna. Bisa langsung beli.")
+    with a2:
+        st.warning("✅ **EXECUTE**\n\nSinyal **kuat**. Layak beli. Boleh langsung eksekusi atau konfirmasi chart dulu.")
+    with a3:
+        st.info("⏳ **READY**\n\nSinyal **cukup baik** tapi belum optimal. Pantau dulu, tunggu momentum masuk.")
+    with a4:
+        st.info("⏸ **WAIT PULLBACK**\n\nHarga sedang naik tinggi. Tunggu koreksi kecil sebelum beli.")
+    st.markdown("---")
+
+    # KOLOM TABEL
+    st.markdown("### 🔍 Penjelasan Kolom Tabel Hasil Scan")
+    t1, t2 = st.columns(2)
+    with t1:
+        st.markdown("""
+| Kolom | Artinya |
+|---|---|
+| **Score** | Nilai total 0–100. Makin tinggi makin bagus |
+| **RR** | Risk/Reward. Min 1.8x. Potensi untung 1.8× dari risiko |
+| **RSI** | Kekuatan tren harga. Zona ideal: 42–72 |
+| **Breakout** | VALID = sudah tembus resistance dengan volume tinggi |
+| **BandarScore** | Deteksi aktivitas investor besar / institusi |
+| **Confluence** | Jumlah sinyal yang sepakat (dari 6). Min harus 4/6 |
+        """)
+    with t2:
+        st.markdown("""
+| Kolom | Artinya |
+|---|---|
+| **Change%** | Perubahan harga hari ini dalam persen |
+| **Entry** | Harga masuk yang disarankan |
+| **SL** | Stop Loss — batas kerugian. Wajib dipasang! |
+| **Target** | Harga target ambil profit |
+| **Lot** | Jumlah lot disarankan sesuai modal & risiko 2% |
+| **ATR** | Volatilitas harian. Dipakai untuk hitung SL & Lot |
+        """)
+    st.markdown("---")
+
+    # LANGKAH HARIAN
+    st.markdown("### 🚀 Rutinitas Harian Pakai ATS")
+    st.markdown("""
+**📱 Pagi hari — cek Telegram:**
+1. Buka notifikasi Telegram dari ATS
+2. Ada sinyal **🔥 EXECUTE NOW** atau **✅ EXECUTE**? → Buka dashboard untuk konfirmasi chart
+3. Cek chart TradingView di tab **📊 Trading Desk** → pastikan tren sesuai
+4. Kalau yakin → centang kolom **BUY** di tabel → klik **Save Active Trades**
+5. Eksekusi di aplikasi broker kamu (RHB, Ajaib, IPOT, Stockbit, dll)
+
+**📋 Setelah beli:**
+1. Pasang **Stop Loss** di broker sesuai kolom SL di tabel — **jangan skip langkah ini**
+2. Pasang **Take Profit** sesuai kolom Target
+3. Catat di tab **📋 Report → Trade Journal** (penting untuk Cybernetic Engine belajar)
+
+**🌙 Sore hari:**
+1. Update status di **Active Trades** (ubah ke CLOSED jika sudah selesai)
+2. Isi PnL di Journal untuk trade yang ditutup hari ini
+    """)
+    st.markdown("---")
+
+    # MANAJEMEN RISIKO
+    st.markdown("### ⚠️ Aturan Manajemen Risiko — WAJIB DIPATUHI")
+    st.error("""
+🚨  3 ATURAN EMAS yang TIDAK BOLEH dilanggar:
+
+1. SELALU pasang Stop Loss — Jika harga turun ke level SL, langsung jual. Tanpa alasan. Tanpa "nanti balik".
+
+2. Maksimal 5 posisi terbuka sekaligus — Sistem hanya tampilkan 5 kandidat terbaik untuk alasan ini. Jangan buka lebih.
+
+3. Risk per trade maksimal 2% dari modal — Sistem sudah menghitung lot yang aman. Jangan beli melebihi lot yang disarankan.
+    """)
+    rr1, rr2, rr3 = st.columns(3)
+    rr1.metric("Risk per Trade", "Maks 2% Modal")
+    rr2.metric("Posisi Terbuka", "Maks 5 Saham")
+    rr3.metric("Min Risk/Reward", "1 : 1.8")
+    st.markdown("---")
+
+    # SETUP PERTAMA
+    st.markdown("### 🛠️ Setup Pertama Kali (Lakukan Sekali Saja)")
+    st.markdown("""
+1. **Set Modal** → Tab **💼 Account** → isi kolom *Modal/Balance* sesuai modal trading kamu
+2. **Test koneksi** → Klik **RUN ATS SCANNER** sekali → cek apakah notifikasi masuk di Telegram
+3. **Kenali universe** → Tab **🕌 ISSI CHECK** → lihat semua saham yang ada di scanner
+    """)
+    st.markdown("---")
+
+    # FAQ
+    st.markdown("### ❓ Pertanyaan yang Sering Ditanyakan")
+
+    with st.expander("Apakah semua saham di sini sudah pasti halal/syariah?"):
+        st.markdown("""
+Ya. ATS hanya scan saham yang masuk **Indeks Saham Syariah Indonesia (ISSI)** —
+daftar resmi OJK yang diperbarui setiap 6 bulan. Saham bank konvensional (BRI, BNI, Mandiri),
+rokok (Sampoerna), dan saham dengan rasio utang riba berlebih **sudah otomatis dikeluarkan**
+dari universe scanner ini.
+        """)
+
+    with st.expander("Kenapa tidak ada sinyal hari ini?"):
+        st.markdown("""
+Beberapa kemungkinan penyebabnya:
+- **Market sedang DISTRIBUTION** — kondisi tidak kondusif, lebih baik tidak masuk
+- **Semua sektor lemah** — sistem filter otomatis hanya masuk ke sektor yang sedang momentum positif
+- **Saham sudah overbought** — RSI di atas 72, terlalu mahal untuk entry baru
+
+👉 Buka expander **🔍 Scan Debug** setelah scan untuk lihat detail alasan setiap saham gugur.
+Tidak ada sinyal = **sistem melindungi modal kamu** dari kondisi yang tidak aman.
+        """)
+
+    with st.expander("Berapa modal minimum yang disarankan?"):
+        st.markdown("""
+- **Rp 1.000.000** → Risk/trade Rp 20.000 — cocok untuk belajar
+- **Rp 5.000.000** → Risk/trade Rp 100.000 — mulai terasa signifikan
+- **Rp 10.000.000+** → Optimal untuk sistem ini bekerja maksimal
+
+Di bawah Rp 1.000.000 perhitungan lot bisa jadi 1 terus karena terlalu kecil untuk diversifikasi.
+        """)
+
+    with st.expander("Apakah sinyal ATS dijamin akurat / pasti profit?"):
+        st.markdown("""
+**Tidak ada sistem trading yang 100% akurat — termasuk ATS.**
+
+Yang membuat sistem ini bekerja bukan karena selalu benar, tapi karena:
+- **Risk/Reward minimal 1:1.8** — bahkan dengan win rate 40% kamu masih bisa profit jangka panjang
+- **Stop Loss wajib** — kerugian dari sinyal yang salah selalu terbatas
+- **Filter ketat 5 lapis** — meminimalkan sinyal buruk
+
+Gunakan ATS sebagai **alat bantu analisis**, bukan jaminan profit. Keputusan final tetap di tangan kamu.
+        """)
+
+    with st.expander("Apa itu Cybernetic Engine dan kapan aktif?"):
+        st.markdown("""
+Cybernetic Engine adalah fitur **adaptif** — sistem belajar dari riwayat trading kamu sendiri.
+
+Setelah kamu punya minimal **20 trade** di Journal dengan kolom PnL terisi, sistem akan otomatis
+menyesuaikan threshold score berdasarkan performa aktual:
+- Win rate **> 65%** → threshold dinaikkan (lebih selektif, cari yang terbaik saja)
+- Win rate **< 40%** → threshold diturunkan (lebih fleksibel di kondisi susah)
+
+Semakin rajin kamu isi Journal, semakin pintar sistemnya. 🧠
+        """)
+
+    with st.expander("Bagaimana cara mengisi Trade Journal dengan benar?"):
+        st.markdown("""
+Tab **📋 Report** → isi tabel Journal:
+
+| Kolom | Contoh | Keterangan |
+|---|---|---|
+| **Date** | 2025-04-25 | Tanggal beli |
+| **Ticker** | BRIS | Kode saham |
+| **Entry** | 1450 | Harga beli per lembar |
+| **Exit** | 1600 | Harga jual (isi setelah tutup posisi) |
+| **Lot** | 5 | Jumlah lot yang dibeli |
+| **PnL** | 750000 | Untung/rugi dalam Rupiah (negatif = rugi) |
+| **Notes** | Signal V4.0 | Catatan bebas |
+
+Klik **💾 Save Journal** setelah selesai mengisi.
+        """)
+
+    st.markdown("---")
+    st.caption(
+        "ATS SuperEngine V4.0 | Scanner Saham Syariah ISSI | "
+        "Bukan rekomendasi investasi — selalu lakukan riset mandiri | "
+        "Gunakan dengan manajemen risiko yang ketat 🤲"
+    )
 
 # ─────────────────────────────────────────────────────────────
 # TAB 1 — TRADING DESK
@@ -992,16 +1200,10 @@ with tabs[1]:
     st.caption("_Ubah balance di tab **💼 Account**_")
     st.markdown("---")
 
-    col_btn, col_topn = st.columns([3, 1])
-    with col_topn:
-        top_n = st.number_input("Top N hasil", min_value=3, max_value=15,
-                                 value=st.session_state.top_n, step=1)  # [I1]
-        st.session_state.top_n = top_n
-    with col_btn:
-        if st.button("🚀 RUN ATS SCANNER V4.0", type="primary", use_container_width=True):
-            with st.spinner("ATS scanning seluruh universe ISSI..."):
-                run_scanner()
-            st.success("✅ Scan selesai")
+    if st.button("🚀 RUN ATS SCANNER V4.0", type="primary", use_container_width=True):
+        with st.spinner("ATS scanning seluruh universe ISSI..."):
+            run_scanner()
+        st.success("✅ Scan selesai — menampilkan 5 kandidat terbaik siap eksekusi")
 
     if st.session_state.dynamic_thresholds:
         th = st.session_state.dynamic_thresholds
