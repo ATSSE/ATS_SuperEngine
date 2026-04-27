@@ -49,6 +49,106 @@ JOURNAL_FILE    = "journal.csv"
 ACTIVE_FILE     = "active_trades.csv"
 
 # ============================================================
+# VERSION HISTORY
+# ============================================================
+APP_VERSION  = "V4.1b"
+APP_UPDATED  = "27 Apr 2025"
+
+VERSION_HISTORY = [
+    {
+        "versi":   "V4.1b",
+        "tanggal": "27 Apr 2025",
+        "tipe":    "Upgrade",
+        "ringkasan": "Market heatmap treemap ISSI + upgrade sector radar",
+        "detail": [
+            "Tambah market heatmap treemap interaktif — warna & ukuran kotak real-time",
+            "5 metric ringkasan: saham naik/turun/flat, top gainer, top loser",
+            "Sector radar diperbarui: garis nol, warna lebih kontras",
+            "Ukuran kotak heatmap proporsional terhadap nilai transaksi harian",
+        ]
+    },
+    {
+        "versi":   "V4.1",
+        "tanggal": "27 Apr 2025",
+        "tipe":    "Bug Fix + Kalibrasi",
+        "ringkasan": "4 bug kritis + 6 kalibrasi + 3 upgrade akurasi",
+        "detail": [
+            "[B1] entry_system tidak lagi baca session_state di background thread",
+            "[B2] Score overflow diperbaiki: min(100) setelah semua bonus",
+            "[B3] EXECUTE NOW tidak lagi butuh timing self-contradictory",
+            "[B4] IDX holidays diperluas ke 2026 + fungsi is_holiday() extensible",
+            "[K1] RSI gate adaptif per regime: BULLISH 45-78, DIST 40-68",
+            "[K2] Confluence minimum adaptif: BULLISH 4/6, lainnya 3/6",
+            "[K3] Bandar spike threshold 2.0x → 1.8x",
+            "[K4] Accumulation compression 8% → 12%",
+            "[K5] Intraday period 2d → 5d untuk VWAP stabil",
+            "[K6] Hapus duplikasi sector_momentum di run_scanner",
+            "Fix Pivot Point: pakai candle kemarin (iloc[-2]) bukan hari ini",
+            "Volume tier filter: skip saham < Rp 500 juta/hari",
+            "Entry freshness: skip jika harga sudah naik > 3% tanpa breakout valid",
+        ]
+    },
+    {
+        "versi":   "V4.0",
+        "tanggal": "26 Apr 2025",
+        "tipe":    "Major Release",
+        "ringkasan": "Refactor besar + How To Use baru + UI profesional",
+        "detail": [
+            "Refactor: scan_core() satu fungsi untuk UI dan auto-scan",
+            "Balance hardcode 800k → baca dari ats_state.json",
+            "Dead code dihapus: finnhub_quote, pullback_zone, lot_size",
+            "Signal lock auto-expire 7 hari",
+            "Cybernetic min_trades 8 → 20 (lebih valid statistik)",
+            "Hari libur IDX 2025 ditambahkan ke filter market",
+            "How To Use ditulis ulang lengkap untuk user awam",
+            "Top N input dihapus, fixed 5 kandidat terbaik",
+            "Balance tersimpan di JSON (persist across restart)",
+            "Active trades tambah kolom ExitPrice, ExitDate",
+            "Journal tambah validasi kolom wajib",
+            "Telegram summary meski tidak ada sinyal EXECUTE",
+            "Server health check: notif Telegram saat restart",
+        ]
+    },
+    {
+        "versi":   "V3.0",
+        "tanggal": "22 Apr 2025",
+        "tipe":    "Major Release",
+        "ringkasan": "Deploy ke Railway + auto-scheduler + banyak perbaikan",
+        "detail": [
+            "VWAP kumulatif 6 bulan → rolling 20 hari",
+            "RSI simple rolling → Wilder's smoothing (standar industri)",
+            "ATR Wilder's EWM untuk stop loss lebih akurat",
+            "Pivot Point formula diperbaiki",
+            "Bug BUY logic diperbaiki: tambah yang belum ada di active trades",
+            "Validasi data ticker: skip < 60 bar, harga/vol nol",
+            "Filter sektor: hanya sektor momentum positif",
+            "Scan debug expander: alasan gugur per ticker + bar chart",
+            "Equity curve & drawdown chart di tab Report",
+            "APScheduler: auto-scan 4x sehari jam IDX",
+            "Deploy ke Railway: 24/7 tanpa buka komputer",
+            "Tombol scanner warna hijau",
+            "Input balance dipindah ke tab Account",
+        ]
+    },
+    {
+        "versi":   "V2.1",
+        "tanggal": "21 Apr 2025",
+        "tipe":    "Initial Release",
+        "ringkasan": "Versi pertama ATS SuperEngine",
+        "detail": [
+            "Scanner saham syariah ISSI berbasis multi-layer filter",
+            "6 sinyal: momentum, accumulation, bandar, breakout, follow through, intraday",
+            "Dynamic threshold percentile P88/P70/P45",
+            "Cybernetic feedback engine adaptif",
+            "Telegram alert untuk sinyal EXECUTE & EXECUTE NOW",
+            "TradingView chart embed",
+            "Sector leader radar",
+            "Active trades & trade journal",
+        ]
+    },
+]
+
+# ============================================================
 # TIMEZONE & JADWAL IDX
 # ============================================================
 WIB = pytz.timezone("Asia/Jakarta")
@@ -1065,13 +1165,14 @@ st.markdown("""
 
 col_title, col_info = st.columns([3, 1])
 with col_title:
-    st.title("ATS SuperEngine V4.0")
+    st.title(f"ATS SuperEngine {APP_VERSION}")
     market_status = "🟢 BUKA" if is_market_open() else "🔴 TUTUP"
     holiday_note  = " 🏖️ Libur" if is_holiday(datetime.now(WIB).date()) else ""
     st.caption(
         f"🕐 {get_wib_now()}  |  Bursa IDX: {market_status}{holiday_note}  |  "
         f"Regime: {st.session_state.get('last_regime', '-')}  |  "
-        f"⏰ Auto-scan: {next_scan_label()}"
+        f"⏰ Auto-scan: {next_scan_label()}  |  "
+        f"📅 Update terakhir: {APP_UPDATED}"
     )
 with col_info:
     cp = st.session_state.cybernetic_params
@@ -1293,6 +1394,26 @@ Klik **💾 Save Journal** setelah selesai mengisi.
         "Bukan rekomendasi investasi — selalu lakukan riset mandiri | "
         "Gunakan dengan manajemen risiko yang ketat 🤲"
     )
+
+    # ── Changelog ──────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 📋 Riwayat Update & Versi")
+
+    for v in VERSION_HISTORY:
+        tipe_color = {
+            "Major Release": "🟣",
+            "Bug Fix + Kalibrasi": "🟠",
+            "Upgrade": "🟢",
+        }.get(v["tipe"], "⚪")
+
+        with st.expander(
+            f"{tipe_color} **{v['versi']}** — {v['tanggal']}  |  {v['ringkasan']}",
+            expanded=(v["versi"] == APP_VERSION)
+        ):
+            st.markdown(f"**Tipe:** {v['tipe']}")
+            st.markdown("**Perubahan:**")
+            for item in v["detail"]:
+                st.markdown(f"- {item}")
 
 # ─────────────────────────────────────────────────────────────
 # TAB 1 — TRADING DESK
@@ -1665,4 +1786,7 @@ with tabs[4]:
             st.write(", ".join(sorted(sector_groups[sector])))
 
 st.divider()
-st.caption("ATS SuperEngine V4.0 | ISSI Syariah Scanner | Bukan rekomendasi investasi")
+st.caption(
+    f"ATS SuperEngine {APP_VERSION}  |  Update terakhir: {APP_UPDATED}  |  "
+    "ISSI Syariah Scanner  |  Bukan rekomendasi investasi"
+)
