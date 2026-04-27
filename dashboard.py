@@ -51,20 +51,20 @@ ACTIVE_FILE     = "active_trades.csv"
 # ============================================================
 # VERSION HISTORY
 # ============================================================
-APP_VERSION  = "V4.1b"
+APP_VERSION  = "V4.2"
 APP_UPDATED  = "27 Apr 2025"
 
 VERSION_HISTORY = [
     {
-        "versi":   "V4.1b",
+        "versi":   "V4.2",
         "tanggal": "27 Apr 2025",
         "tipe":    "Upgrade",
-        "ringkasan": "Market heatmap treemap ISSI + upgrade sector radar",
+        "ringkasan": "Tambah scan 09:30 Early Momentum + perkuat deteksi early mover",
         "detail": [
-            "Tambah market heatmap treemap interaktif — warna & ukuran kotak real-time",
-            "5 metric ringkasan: saham naik/turun/flat, top gainer, top loser",
-            "Sector radar diperbarui: garis nol, warna lebih kontras",
-            "Ukuran kotak heatmap proporsional terhadap nilai transaksi harian",
+            "Scan ke-5 ditambahkan jam 09:30 WIB — tangkap momentum 30 menit pertama",
+            "Entry freshness diperkuat: VALID breakout boleh +7%, WEAK +5%, tanpa breakout +3%",
+            "Early mover bonus score: saham breakout VALID + naik >1.5% dapat boost +2-4 poin",
+            "Jadwal How To Use diperbarui menampilkan 5 waktu scan",
         ]
     },
     {
@@ -155,6 +155,7 @@ WIB = pytz.timezone("Asia/Jakarta")
 
 SCAN_SCHEDULE = [
     {"hour": 9,  "minute": 5,  "label": "Pre-Open"},
+    {"hour": 9,  "minute": 30, "label": "Early Momentum"},   # ← catch early mover
     {"hour": 11, "minute": 30, "label": "Mid Sesi 1"},
     {"hour": 13, "minute": 35, "label": "Open Sesi 2"},
     {"hour": 15, "minute": 0,  "label": "Pre-Closing"},
@@ -813,14 +814,17 @@ def scan_core(market: dict, balance: float, top_n: int = 5,
             timing   = entry_timing(df)
             chg_pct  = daily_change_pct(df)
 
-            # [Fix 9] Entry freshness: skip jika harga sudah naik > 3% hari ini
-            # dan bukan kondisi Execute Now — artinya momen entry sudah terlewat
-            if chg_pct > 3.0 and breakout != "VALID":
+            # Entry freshness — batas bergerak tergantung kekuatan breakout:
+            # VALID breakout  → boleh sampai +7% (momentum kuat, masih layak masuk)
+            # WEAK breakout   → boleh sampai +5%
+            # Tanpa breakout  → maksimal +3% (entry sudah terlambat)
+            freshness_limit = 7.0 if breakout == "VALID" else (5.0 if breakout == "WEAK" else 3.0)
+            if chg_pct > freshness_limit:
                 debug_log.append({"Ticker": tkr_clean, "Sector": sector,
                     "RSI": round(rsi_value, 1), "EMA_OK": "✅" if ema_ok else "❌",
                     "Bandar": "-", "Breakout": breakout,
                     "Confluence": "-", "RR": round(rr, 1), "Score": "-",
-                    "❌ Gugur di": f"Entry expired: sudah naik {chg_pct:.1f}% hari ini tanpa breakout valid"})
+                    "❌ Gugur di": f"Entry expired: naik {chg_pct:.1f}% (batas {freshness_limit:.0f}% untuk breakout {breakout})"})
                 continue
 
             # Filter 3: Bandar & Breakout
@@ -870,6 +874,13 @@ def scan_core(market: dict, balance: float, top_n: int = 5,
             if momentum == 2:               score += 1
             if ft == 2:                     score += 1
             if last_price > ema_val * 1.01: score += 1
+
+            # Early mover bonus: saham yang sudah bergerak dengan breakout VALID
+            # mendapat boost score — ini yang kita ingin tangkap
+            if breakout == "VALID" and chg_pct > 1.5:   score += 2   # strong breakout mover
+            if breakout == "VALID" and chg_pct > 3.0:   score += 2   # very strong mover
+            if breakout == "WEAK"  and chg_pct > 1.0:   score += 1   # weak breakout mover
+
             score = min(100.0, score)       # [B2] cap SETELAH semua bonus
 
             debug_log.append({"Ticker": tkr_clean, "Sector": sector,
@@ -1222,11 +1233,12 @@ with tabs[0]:
         "termasuk hari libur nasional IDX yang sudah diprogram. "
         "Kamu tidak perlu melakukan apapun."
     )
-    j1, j2, j3, j4 = st.columns(4)
+    j1, j2, j3, j4, j5 = st.columns(5)
     j1.success("**09:05 WIB**\n\nPre-Open\n\n*Segera setelah bursa buka*")
-    j2.success("**11:30 WIB**\n\nMid Sesi 1\n\n*Tengah sesi pagi*")
-    j3.success("**13:35 WIB**\n\nOpen Sesi 2\n\n*Setelah jeda ishoma*")
-    j4.success("**15:00 WIB**\n\nPre-Closing\n\n*Peluang terakhir hari ini*")
+    j2.success("**09:30 WIB**\n\nEarly Momentum\n\n*Tangkap mover 30 menit pertama*")
+    j3.success("**11:30 WIB**\n\nMid Sesi 1\n\n*Tengah sesi pagi*")
+    j4.success("**13:35 WIB**\n\nOpen Sesi 2\n\n*Setelah jeda ishoma*")
+    j5.success("**15:00 WIB**\n\nPre-Closing\n\n*Peluang terakhir hari ini*")
     st.markdown("---")
 
     # SINYAL
