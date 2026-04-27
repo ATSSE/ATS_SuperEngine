@@ -558,6 +558,7 @@ if "sector_table"       not in st.session_state: st.session_state.sector_table  
 if "dynamic_thresholds" not in st.session_state: st.session_state.dynamic_thresholds = None
 if "last_regime"        not in st.session_state: st.session_state.last_regime        = "-"
 if "debug_log"          not in st.session_state: st.session_state.debug_log          = []
+if "heatmap_data"       not in st.session_state: st.session_state.heatmap_data       = None
 TOP_N_RESULTS = 5   # Fixed: selalu tampilkan 5 kandidat terbaik siap eksekusi
 
 # ============================================================
@@ -606,8 +607,46 @@ def load_market() -> dict[str, pd.DataFrame]:
     return market
 
 # ============================================================
-# [F1] SCAN CORE — satu fungsi inti, dipakai run_scanner & auto_scan
+# MARKET HEATMAP — Treemap visual kondisi semua saham ISSI
 # ============================================================
+def build_heatmap_data(market: dict) -> pd.DataFrame:
+    """
+    Bangun dataframe untuk treemap heatmap.
+    Size = estimasi nilai transaksi harian (harga × volume × 100 lot)
+    Color = % change harga hari ini
+    """
+    rows = []
+    for ticker, df in market.items():
+        if ticker not in ISSI_UNIVERSE:
+            continue
+        try:
+            close      = df["Close"].squeeze()
+            volume     = df["Volume"].squeeze()
+            tkr_clean  = ticker.replace(".JK", "")
+            sector     = get_sector(ticker)
+            chg        = daily_change_pct(df)
+            last_price = float(close.iloc[-1])
+            avg_vol    = float(volume.tail(20).mean())
+
+            # Nilai transaksi harian dalam miliar IDR (sebagai ukuran kotak)
+            size_val = max((last_price * avg_vol * 100) / 1_000_000_000, 0.1)
+
+            # Label yang tampil di dalam kotak
+            label = f"{tkr_clean}  {chg:+.2f}%"
+
+            rows.append({
+                "Sektor":   sector,
+                "Ticker":   tkr_clean,
+                "Label":    label,
+                "Change%":  round(chg, 2),
+                "Size":     round(size_val, 4),
+            })
+        except Exception:
+            continue
+
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+
 def scan_core(market: dict, balance: float, top_n: int = 5,
               show_progress: bool = False) -> tuple[pd.DataFrame, pd.DataFrame, dict, str, pd.DataFrame]:
     """
@@ -808,6 +847,9 @@ def run_scanner():
     st.session_state.debug_log          = debug_df.to_dict("records") if not debug_df.empty else []
     st.session_state.scan_result        = scan_df
     st.session_state.sector_table       = sector_df   # [K7] dari scan_core langsung
+
+    # Build heatmap dari seluruh market data (bukan hanya kandidat)
+    st.session_state.heatmap_data = build_heatmap_data(market)
 
     if scan_df.empty:
         return
@@ -1403,14 +1445,103 @@ with tabs[1]:
                 use_container_width=True, hide_index=True,
                 column_config={c: st.column_config.TextColumn(c) for c in filtered.columns})
 
+    # ── Market Heatmap ───────────────────────────────────────────
+    if st.session_state.heatmap_data is not None and not st.session_state.heatmap_data.empty:
+        st.markdown("---")
+        st.subheader("🌡️ Market Heatmap — Saham Syariah ISSI")
+
+        hdf = st.session_state.heatmap_data.copy()
+
+        # Hitung stats ringkasan
+        n_green  = (hdf["Change%"] > 0).sum()
+        n_red    = (hdf["Change%"] < 0).sum()
+        n_flat   = (hdf["Change%"] == 0).sum()
+        avg_chg  = hdf["Change%"].mean()
+        best_tkr = hdf.loc[hdf["Change%"].idxmax(), "Ticker"]
+        best_chg = hdf["Change%"].max()
+        worst_tkr = hdf.loc[hdf["Change%"].idxmin(), "Ticker"]
+        worst_chg = hdf["Change%"].min()
+
+        hm1, hm2, hm3, hm4, hm5 = st.columns(5)
+        hm1.metric("Naik", f"{n_green} saham", f"+{avg_chg:.2f}% avg" if avg_chg > 0 else f"{avg_chg:.2f}% avg")
+        hm2.metric("Turun", f"{n_red} saham")
+        hm3.metric("Flat", f"{n_flat} saham")
+        hm4.metric("Top Gainer", best_tkr, f"{best_chg:+.2f}%")
+        hm5.metric("Top Loser", worst_tkr, f"{worst_chg:+.2f}%")
+
+        # Treemap
+        fig_heat = px.treemap(
+            hdf,
+            path=["Sektor", "Ticker"],
+            values="Size",
+            color="Change%",
+            color_continuous_scale=[
+                "#7f1d1d",  # merah gelap (-5% ke bawah)
+                "#dc2626",  # merah
+                "#fca5a5",  # merah muda (-1%)
+                "#f1f5f9",  # abu netral (0%)
+                "#86efac",  # hijau muda (+1%)
+                "#16a34a",  # hijau
+                "#14532d",  # hijau gelap (+5% ke atas)
+            ],
+            color_continuous_midpoint=0,
+            range_color=[-5, 5],
+            custom_data=["Change%", "Sektor"],
+            title=None,
+        )
+        fig_heat.update_traces(
+            texttemplate="<b>%{label}</b><br>%{customdata[0]:+.2f}%",
+            textfont_size=11,
+            hovertemplate=(
+                "<b>%{label}</b><br>"
+                "Sektor: %{customdata[1]}<br>"
+                "Change: %{customdata[0]:+.2f}%<br>"
+                "Nilai transaksi: %{value:.2f}M<br>"
+                "<extra></extra>"
+            ),
+            marker_line_width=0.5,
+            marker_line_color="rgba(255,255,255,0.3)",
+        )
+        fig_heat.update_layout(
+            height=500,
+            margin=dict(t=10, b=10, l=10, r=10),
+            coloraxis_showscale=True,
+            coloraxis_colorbar=dict(
+                title="Change%",
+                tickvals=[-5, -3, -1, 0, 1, 3, 5],
+                ticktext=["-5%", "-3%", "-1%", "0%", "+1%", "+3%", "+5%"],
+                len=0.8,
+            ),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+        )
+        st.plotly_chart(fig_heat, use_container_width=True)
+        st.caption(
+            "Ukuran kotak = estimasi nilai transaksi harian (Rp miliar). "
+            "Warna = % perubahan harga. Klik sektor untuk zoom masuk."
+        )
+
+    # ── Sector Leader Radar ─────────────────────────────────────
     if st.session_state.sector_table is not None:
         st.markdown("---")
         st.subheader("🗺️ Sector Leader Radar")
-        fig = px.bar(st.session_state.sector_table, x="Strength", y="Sector",
-                     orientation="h", color="Strength",
-                     color_continuous_scale=["#ef4444","#f59e0b","#22c55e"],
-                     title="Kekuatan Sektor")
-        fig.update_layout(height=400, showlegend=False)
+        fig = px.bar(
+            st.session_state.sector_table,
+            x="Strength", y="Sector", orientation="h",
+            color="Strength",
+            color_continuous_scale=["#dc2626", "#f59e0b", "#16a34a"],
+            title=None,
+        )
+        fig.update_layout(
+            height=380,
+            showlegend=False,
+            margin=dict(t=10, b=10, l=10, r=10),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            xaxis=dict(gridcolor="rgba(128,128,128,0.15)"),
+            yaxis=dict(gridcolor="rgba(0,0,0,0)"),
+        )
+        fig.add_vline(x=0, line_width=1, line_color="rgba(128,128,128,0.4)")
         st.plotly_chart(fig, use_container_width=True)
 
 # ─────────────────────────────────────────────────────────────
