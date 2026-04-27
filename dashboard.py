@@ -226,27 +226,37 @@ def calculate_sl_atr(entry: float, atr: float, multiplier: float = 1.5) -> float
     return max(entry - multiplier * atr, entry * 0.93)
 
 # ============================================================
-# TARGET — [F3] Pivot Point DIPERBAIKI: (H+L+C)/3 satu candle
+# TARGET — Pivot Point dari candle SEBELUMNYA (lebih akurat)
 # ============================================================
 def find_target(df: pd.DataFrame, entry: float) -> float:
     high  = df["High"].squeeze()
     low   = df["Low"].squeeze()
     close = df["Close"].squeeze()
 
-    # [F3] Pivot Point benar: dari 1 candle terakhir (bukan mean 5 hari)
-    pp = (float(high.iloc[-1]) + float(low.iloc[-1]) + float(close.iloc[-1])) / 3
-    r1 = 2 * pp - float(low.iloc[-1])
-    r2 = pp + (float(high.iloc[-1]) - float(low.iloc[-1]))
+    # Pivot Point standar: dari candle SEBELUMNYA (iloc[-2]),
+    # bukan candle hari ini — karena hari ini belum tutup
+    pp = (float(high.iloc[-2]) + float(low.iloc[-2]) + float(close.iloc[-2])) / 3
+    r1 = 2 * pp - float(low.iloc[-2])
+    r2 = pp + (float(high.iloc[-2]) - float(low.iloc[-2]))
+    r3 = float(high.iloc[-2]) + 2 * (pp - float(low.iloc[-2]))  # R3 tambahan
 
-    # Fibonacci dari swing 20 hari
+    # Fibonacci retracement dari swing 20 hari
     swing_high = float(high.tail(20).max())
     swing_low  = float(low.tail(20).min())
     fib_618    = swing_low + 0.618 * (swing_high - swing_low)
+    fib_100    = swing_high   # 100% = swing high itu sendiri
 
-    candidates = [v for v in [r1, r2, fib_618, swing_high] if v > entry * 1.02]
+    # Kumpulkan semua kandidat yang valid (min 2% di atas entry)
+    candidates = sorted([
+        v for v in [r1, r2, r3, fib_618, fib_100]
+        if v > entry * 1.02
+    ])
+
     if not candidates:
-        return entry * 1.07
-    target = min(candidates)
+        return entry * 1.07   # fallback minimal 7%
+
+    # Ambil target terdekat yang masih memberikan RR layak (min 4% dari entry)
+    target = candidates[0]
     return float(target) if target > entry * 1.04 else entry * 1.07
 
 # ============================================================
@@ -564,6 +574,10 @@ from config.universe              import ISSI_UNIVERSE, SECTOR_MAP, get_sector
 # ============================================================
 # LOAD MARKET DATA
 # ============================================================
+# Volume minimum harian dalam rupiah — saham di bawah ini terlalu sepi
+# untuk swing trading (spread lebar, sulit keluar posisi)
+MIN_DAILY_VOLUME_IDR = 500_000_000   # Rp 500 juta/hari
+
 @st.cache_data(ttl=300)
 def load_market() -> dict[str, pd.DataFrame]:
     raw = yf.download(
@@ -574,9 +588,18 @@ def load_market() -> dict[str, pd.DataFrame]:
     for s in ISSI_UNIVERSE:
         try:
             df = raw[s].dropna()
-            if len(df) < 60:                              continue
-            if df["Close"].squeeze().iloc[-1] <= 0:       continue
+            if len(df) < 60:                               continue
+            last_close = float(df["Close"].squeeze().iloc[-1])
+            if last_close <= 0:                            continue
             if df["Volume"].squeeze().tail(5).mean() <= 0: continue
+
+            # [Fix 8] Volume tier filter: cek likuiditas minimum
+            # Estimasi nilai transaksi harian = harga × volume × 100 (per lot)
+            avg_vol_20   = float(df["Volume"].squeeze().tail(20).mean())
+            est_daily_idr = last_close * avg_vol_20 * 100
+            if est_daily_idr < MIN_DAILY_VOLUME_IDR:
+                continue   # Skip saham terlalu sepi
+
             market[s] = df
         except Exception:
             continue
@@ -650,6 +673,16 @@ def scan_core(market: dict, balance: float, top_n: int = 5,
             ft       = follow_through(df)
             timing   = entry_timing(df)
             chg_pct  = daily_change_pct(df)
+
+            # [Fix 9] Entry freshness: skip jika harga sudah naik > 3% hari ini
+            # dan bukan kondisi Execute Now — artinya momen entry sudah terlewat
+            if chg_pct > 3.0 and breakout != "VALID":
+                debug_log.append({"Ticker": tkr_clean, "Sector": sector,
+                    "RSI": round(rsi_value, 1), "EMA_OK": "✅" if ema_ok else "❌",
+                    "Bandar": "-", "Breakout": breakout,
+                    "Confluence": "-", "RR": round(rr, 1), "Score": "-",
+                    "❌ Gugur di": f"Entry expired: sudah naik {chg_pct:.1f}% hari ini tanpa breakout valid"})
+                continue
 
             # Filter 3: Bandar & Breakout
             if bandar < 2 or breakout == "WAIT":
