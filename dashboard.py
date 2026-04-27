@@ -1,27 +1,25 @@
 """
-ATS SuperEngine V4.0 — Saham Syariah ISSI Scanner
+ATS SuperEngine V4.1 — Saham Syariah ISSI Scanner
 ═══════════════════════════════════════════════════
-Perbaikan dari V3.0 (hasil evaluasi mendalam):
+Perbaikan kritis dari V4.0 (hasil evaluasi mendalam):
 
-CRITICAL FIXES:
-  [F1] Refactor: auto_scan_background tidak lagi duplikasi kode
-       → satu fungsi inti scan_core() dipakai oleh keduanya
-  [F2] Balance hardcode 800k di auto_scan → baca dari ats_state.json
-  [F3] Pivot Point formula diperbaiki: (H+L+C)/3 dari 1 candle, bukan mean 5 hari
-  [F4] Dead code dihapus: finnhub_quote, pullback_zone, lot_size, acct_rr
-  [F5] Signal lock auto-expire setelah 7 hari (cegah JSON membengkak)
-  [F6] Cybernetic min_trades dinaikkan 8 → 20 (lebih statistically valid)
-  [F7] Hari libur nasional IDX 2025 ditambahkan ke filter market open
+BUG FIXES:
+  [B1] entry_system tidak lagi baca st.session_state di background thread
+       → terima thresholds & cyber_params sebagai parameter eksplisit
+  [B2] Score overflow diperbaiki: min(100, score) setelah SEMUA bonus
+  [B3] EXECUTE NOW tidak lagi minta timing == EXECUTE NOW (self-contradictory)
+       → diganti kondisi lebih logis: score tinggi + bandar kuat + breakout VALID
+  [B4] IDX holidays diperluas ke 2025+2026, fungsi is_holiday() extensible
 
-IMPROVEMENTS:
-  [I1] Top-N hasil scan bisa dikonfigurasi user (default 5, max 15)
-  [I2] Server health check: Telegram notif saat app start/restart
-  [I3] Active trades: tambah kolom ExitPrice, ExitDate, PnL auto-kalkulasi
-  [I4] Journal: validasi kolom wajib saat entry baru
-  [I5] Balance tersimpan di ats_state.json (persist across restart)
-  [I6] Telegram pesan lebih informatif: tambah % change harga hari ini
-  [I7] Scan summary Telegram: ringkasan berapa kandidat & top scorer
-       meski tidak ada EXECUTE signal
+KALIBRASI:
+  [K1] RSI gate adaptif per regime: BULLISH 45-78, SIDEWAYS 42-72, DIST 40-68
+  [K2] Confluence minimum adaptif: BULLISH 4/6, SIDEWAYS/DIST 3/6
+  [K3] Bandar spike threshold 2.0x → 1.8x (lebih realistis untuk mid-cap)
+  [K4] Accumulation compression 8% → 12% (lebih realistis)
+  [K5] intraday_confirm period 2d → 5d (cukup data untuk VWAP stabil)
+  [K6] Hapus duplikasi sector_momentum di run_scanner
+  [K7] scan_core return sector_df sekalian (single source of truth)
+  [K8] Cybernetic recent cutoff 10 → 15 trades (konsisten dengan min 20)
 """
 
 import streamlit as st
@@ -62,44 +60,41 @@ SCAN_SCHEDULE = [
     {"hour": 15, "minute": 0,  "label": "Pre-Closing"},
 ]
 
-# [F7] Hari libur nasional IDX 2025 (tambahkan setiap tahun)
-IDX_HOLIDAYS_2025 = {
-    date(2025, 1, 1),   # Tahun Baru
-    date(2025, 1, 27),  # Isra Mi'raj
-    date(2025, 1, 29),  # Imlek
-    date(2025, 3, 28),  # Nyepi
-    date(2025, 3, 31),  # Idul Fitri
-    date(2025, 4, 1),   # Idul Fitri
-    date(2025, 4, 2),   # Idul Fitri
-    date(2025, 4, 3),   # Cuti Bersama
-    date(2025, 4, 4),   # Cuti Bersama
-    date(2025, 4, 18),  # Wafat Isa
-    date(2025, 5, 1),   # Hari Buruh
-    date(2025, 5, 12),  # Waisak
-    date(2025, 5, 29),  # Kenaikan Isa
-    date(2025, 6, 1),   # Hari Lahir Pancasila
-    date(2025, 6, 6),   # Idul Adha
-    date(2025, 6, 27),  # Tahun Baru Islam
-    date(2025, 8, 17),  # HUT RI
-    date(2025, 9, 5),   # Maulid Nabi
-    date(2025, 12, 25), # Natal
-    date(2025, 12, 26), # Cuti Bersama Natal
+# [B4] Hari libur IDX — covers 2025 & 2026, extensible untuk tahun berikutnya
+IDX_HOLIDAYS: set[date] = {
+    # 2025
+    date(2025, 1, 1),   date(2025, 1, 27),  date(2025, 1, 29),
+    date(2025, 3, 28),  date(2025, 3, 31),  date(2025, 4, 1),
+    date(2025, 4, 2),   date(2025, 4, 3),   date(2025, 4, 4),
+    date(2025, 4, 18),  date(2025, 5, 1),   date(2025, 5, 12),
+    date(2025, 5, 29),  date(2025, 6, 1),   date(2025, 6, 6),
+    date(2025, 6, 27),  date(2025, 8, 17),  date(2025, 9, 5),
+    date(2025, 12, 25), date(2025, 12, 26),
+    # 2026
+    date(2026, 1, 1),   date(2026, 1, 14),  date(2026, 1, 19),
+    date(2026, 3, 18),  date(2026, 3, 19),  date(2026, 3, 20),
+    date(2026, 3, 23),  date(2026, 4, 3),   date(2026, 5, 1),
+    date(2026, 5, 20),  date(2026, 5, 22),  date(2026, 6, 1),
+    date(2026, 6, 17),  date(2026, 8, 17),  date(2026, 8, 18),
+    date(2026, 9, 24),  date(2026, 12, 25),
 }
+
+def is_holiday(d: date) -> bool:
+    """Cek apakah tanggal adalah hari libur IDX."""
+    return d in IDX_HOLIDAYS
 
 def is_market_open() -> bool:
     now_wib = datetime.now(WIB)
     today   = now_wib.date()
-    if now_wib.weekday() >= 5:          # Sabtu/Minggu
-        return False
-    if today in IDX_HOLIDAYS_2025:      # [F7] Hari libur
-        return False
+    if now_wib.weekday() >= 5:    return False
+    if is_holiday(today):         return False
     open_t  = now_wib.replace(hour=9,  minute=0,  second=0, microsecond=0)
     close_t = now_wib.replace(hour=15, minute=30, second=0, microsecond=0)
     return open_t <= now_wib <= close_t
 
 def is_trading_day() -> bool:
-    today = datetime.now(WIB).date()
-    return datetime.now(WIB).weekday() < 5 and today not in IDX_HOLIDAYS_2025
+    now_wib = datetime.now(WIB)
+    return now_wib.weekday() < 5 and not is_holiday(now_wib.date())
 
 def get_wib_now() -> str:
     return datetime.now(WIB).strftime("%H:%M:%S WIB")
@@ -184,8 +179,15 @@ def calculate_rsi(df: pd.DataFrame, period: int = 14) -> float:
     val      = float(rsi.iloc[-1])
     return val if not np.isnan(val) else 50.0
 
-def rsi_gate(df: pd.DataFrame, rsi_min=42, rsi_max=72) -> tuple[bool, float]:
+# [K1] RSI gate adaptif per regime — dipanggil dengan regime saat ini
+def rsi_gate(df: pd.DataFrame, regime: str = "SIDEWAYS") -> tuple[bool, float]:
     rsi = calculate_rsi(df)
+    if regime == "BULLISH":
+        rsi_min, rsi_max = 45, 78   # Lebih toleran overbought saat bullish
+    elif regime == "DISTRIBUTION":
+        rsi_min, rsi_max = 40, 68   # Lebih ketat saat distribusi
+    else:                            # SIDEWAYS / VOLATILE / unknown
+        rsi_min, rsi_max = 42, 72
     return rsi_min <= rsi <= rsi_max, rsi
 
 # ============================================================
@@ -301,7 +303,7 @@ def accumulation_phase(df: pd.DataFrame) -> int:
     low20        = float(close.tail(20).min())
     range_ratio  = (high20 - low20) / last if last > 0 else 1
     avg_vol      = float(volume.tail(20).mean())
-    compression  = range_ratio < 0.08
+    compression  = range_ratio < 0.12          # [K4] 8% → 12%, lebih realistis
     volume_build = float(volume.tail(5).mean()) >= avg_vol * 0.9
     higher_low   = float(close.tail(10).min()) >= float(close.tail(20).min())
     return sum([compression, volume_build, higher_low])
@@ -310,7 +312,7 @@ def bandar_detection(df: pd.DataFrame) -> int:
     close        = df["Close"].squeeze()
     volume       = df["Volume"].squeeze()
     avg_vol      = float(volume.tail(20).mean())
-    spike        = float(volume.iloc[-1]) > avg_vol * 2.0
+    spike        = float(volume.iloc[-1]) > avg_vol * 1.8   # [K3] 2.0x → 1.8x
     price_trend  = float(close.tail(5).mean()) > float(close.tail(10).mean())
     vol_stable   = float(volume.tail(5).mean()) >= avg_vol * 0.9
     accumulation = price_trend and vol_stable
@@ -348,7 +350,7 @@ def follow_through(df: pd.DataFrame) -> int:
 
 def intraday_confirm(ticker: str) -> int:
     try:
-        df5 = yf.download(tickers=ticker, period="2d", interval="5m",
+        df5 = yf.download(tickers=ticker, period="5d", interval="5m",  # [K5] 2d → 5d
                           progress=False, auto_adjust=True)
         if df5 is None or len(df5) < 10:
             return 0
@@ -399,8 +401,10 @@ def calculate_score(prob: float, runner: float, quality: str,
 # ============================================================
 # CONFLUENCE
 # ============================================================
+# [K2] Confluence check dengan minimum adaptif per regime
 def confluence_check(momentum: int, accum: int, bandar: int,
-                     breakout: str, rr: float, ema_ok: bool) -> tuple[int, dict, bool]:
+                     breakout: str, rr: float, ema_ok: bool,
+                     regime: str = "SIDEWAYS") -> tuple[int, dict, bool]:
     signals = {
         "Momentum":     momentum >= 1,
         "Accumulation": accum >= 2,
@@ -410,7 +414,9 @@ def confluence_check(momentum: int, accum: int, bandar: int,
         "Uptrend":      ema_ok,
     }
     count = sum(signals.values())
-    return count, signals, count >= 4
+    # Minimum adaptif: BULLISH butuh 4/6, kondisi lain cukup 3/6
+    min_conf = 4 if regime == "BULLISH" else 3
+    return count, signals, count >= min_conf
 
 # ============================================================
 # DYNAMIC THRESHOLD
@@ -445,7 +451,7 @@ def cybernetic_feedback_engine(journal_df: pd.DataFrame, current_regime: str):
     recent = journal_df.copy()
     recent["Date"] = pd.to_datetime(recent["Date"]).dt.date
     recent = recent[recent["Date"] >= cutoff]
-    if len(recent) < 10:
+    if len(recent) < 15:   # [K8] konsisten: butuh min 15 recent dari total 20
         return None
     winrate     = float((recent["PnL"] > 0).mean() * 100)
     trade_count = len(recent)
@@ -474,12 +480,22 @@ def cybernetic_feedback_engine(journal_df: pd.DataFrame, current_regime: str):
 # ============================================================
 # ENTRY SYSTEM
 # ============================================================
-def entry_system(row: pd.Series) -> str:
-    thresholds  = st.session_state.get("dynamic_thresholds") or {}
+# [B1] entry_system terima thresholds & cyber_params secara eksplisit
+# agar aman dipanggil dari background thread (tidak ada st.session_state)
+def entry_system(row: pd.Series,
+                 thresholds: dict | None = None,
+                 cyber_params: dict | None = None) -> str:
+    # Fallback ke session_state hanya jika dipanggil dari UI context
+    if thresholds is None:
+        thresholds = st.session_state.get("dynamic_thresholds") or {}
+    if cyber_params is None:
+        cyber_params = st.session_state.get("cybernetic_params") or {}
+
     exec_now_th = thresholds.get("execute_now", 85)
     exec_th     = thresholds.get("execute", 75)
     ready_th    = thresholds.get("ready", 65)
-    min_rr      = st.session_state.cybernetic_params.get("min_rr", 1.8)
+    min_rr      = cyber_params.get("min_rr", 1.8)
+
     try:
         entry  = float(str(row["Entry"]).replace(".", "").replace(",", ""))
         target = float(str(row["Target"]).replace(".", "").replace(",", ""))
@@ -487,22 +503,26 @@ def entry_system(row: pd.Series) -> str:
         return "❌ SKIP"
     if entry >= target * 0.97:
         return "❌ SKIP"
+
     score    = row.get("Score", 0)
     rr       = row.get("RR", 0)
     breakout = row.get("Breakout", "")
     bandar   = row.get("BandarScore", 0)
     momentum = row.get("Momentum", 0)
     accum    = row.get("Accumulation", 0)
-    timing   = row.get("Timing", "")
-    if (score >= exec_now_th and momentum >= 2 and accum >= 2 and rr >= 2.0 and
-            breakout == "VALID" and bandar >= 3 and timing == "🔥 EXECUTE NOW"):
+
+    # [B3] EXECUTE NOW: tidak lagi pakai timing (self-contradictory)
+    # Cukup: score sangat tinggi + bandar kuat + breakout valid + momentum ok
+    if (score >= exec_now_th and rr >= 2.0 and
+            breakout == "VALID" and bandar >= 3 and momentum >= 1):
         return "🔥 EXECUTE NOW"
+
     if score >= exec_th and rr >= min_rr and breakout in ("VALID", "WEAK") and bandar >= 2:
         return "✅ EXECUTE"
+
     if score >= ready_th:
         return "⏳ READY"
-    if timing == "⏳ WAIT PULLBACK":
-        return "⏸ WAIT PULLBACK"
+
     return "❌ SKIP"
 
 # ============================================================
@@ -566,10 +586,10 @@ def load_market() -> dict[str, pd.DataFrame]:
 # [F1] SCAN CORE — satu fungsi inti, dipakai run_scanner & auto_scan
 # ============================================================
 def scan_core(market: dict, balance: float, top_n: int = 5,
-              show_progress: bool = False) -> tuple[pd.DataFrame, pd.DataFrame, dict, str]:
+              show_progress: bool = False) -> tuple[pd.DataFrame, pd.DataFrame, dict, str, pd.DataFrame]:
     """
-    Inti scanner. Return: (scan_df, debug_df, thresholds, regime)
-    show_progress=True hanya kalau dipanggil dari UI (ada st.progress).
+    Inti scanner.
+    Return: (scan_df, debug_df, thresholds, regime, sector_df)
     """
     regime       = detect_market_regime(market)
     sector_power = sector_momentum(market, SECTOR_MAP)
@@ -606,13 +626,13 @@ def scan_core(market: dict, balance: float, top_n: int = 5,
                     "❌ Gugur di": f"Sektor lemah (strength={sec_str})"})
                 continue
 
-            # Filter 2: RSI
-            rsi_ok, rsi_value = rsi_gate(df)
+            # Filter 2: RSI — [K1] adaptif per regime
+            rsi_ok, rsi_value = rsi_gate(df, regime)
             if not rsi_ok:
                 debug_log.append({"Ticker": tkr_clean, "Sector": sector,
                     "RSI": round(rsi_value, 1), "EMA_OK": "-", "Bandar": "-",
                     "Breakout": "-", "Confluence": "-", "RR": "-", "Score": "-",
-                    "❌ Gugur di": f"RSI out of range ({rsi_value:.1f}, batas 42–72)"})
+                    "❌ Gugur di": f"RSI out of range ({rsi_value:.1f}) untuk regime {regime}"})
                 continue
 
             ema_ok, last_price, ema_val = ema_trend_filter(df)
@@ -650,16 +670,17 @@ def scan_core(market: dict, balance: float, top_n: int = 5,
             liq_raw  = liquidity_trap(df)
             liq_str  = "🔴 TRAP" if liq_raw == "TRAP" else "🟢 OK"
 
-            # Filter 4: Confluence
+            # Filter 4: Confluence — [K2] min adaptif per regime
             conf_count, conf_signals, conf_passed = confluence_check(
-                momentum, accum, bandar, breakout, rr, ema_ok)
+                momentum, accum, bandar, breakout, rr, ema_ok, regime)
             if not conf_passed:
                 failed = [k for k, v in conf_signals.items() if not v]
+                min_c  = 4 if regime == "BULLISH" else 3
                 debug_log.append({"Ticker": tkr_clean, "Sector": sector,
                     "RSI": round(rsi_value, 1), "EMA_OK": "✅" if ema_ok else "❌",
                     "Bandar": bandar, "Breakout": breakout,
                     "Confluence": f"{conf_count}/6", "RR": round(rr, 1), "Score": "-",
-                    "❌ Gugur di": f"Confluence {conf_count}/6 (gagal: {', '.join(failed)})"})
+                    "❌ Gugur di": f"Confluence {conf_count}/6 < {min_c} (gagal: {', '.join(failed)})"})
                 continue
 
             # Filter 5: RR
@@ -671,12 +692,13 @@ def scan_core(market: dict, balance: float, top_n: int = 5,
                     "❌ Gugur di": f"RR terlalu rendah ({rr:.1f}, min 1.8)"})
                 continue
 
-            # Score
+            # Score + [B2] cap yang benar setelah SEMUA bonus
             score  = calculate_score(prob, runner, quality, rr, liq_str, bandar)
             score += momentum * 0.8 + accum * 0.9 + ft * 0.7 + intraday * 0.5
-            if momentum == 2:               score = min(100, score + 1)
-            if ft == 2:                     score = min(100, score + 1)
-            if last_price > ema_val * 1.01: score = min(100, score + 1)
+            if momentum == 2:               score += 1
+            if ft == 2:                     score += 1
+            if last_price > ema_val * 1.01: score += 1
+            score = min(100.0, score)       # [B2] cap SETELAH semua bonus
 
             debug_log.append({"Ticker": tkr_clean, "Sector": sector,
                 "RSI": round(rsi_value, 1), "EMA_OK": "✅" if ema_ok else "❌",
@@ -690,7 +712,7 @@ def scan_core(market: dict, balance: float, top_n: int = 5,
                 "Probability": int(prob), "RunnerScore": int(runner),
                 "PullbackQuality": quality, "Liquidity": liq_str,
                 "RSI": round(rsi_value, 1), "RR": round(rr, 1),
-                "Change%": chg_pct,                    # [I6]
+                "Change%": chg_pct,
                 "Momentum": momentum, "Accumulation": accum,
                 "BandarScore": bandar, "Breakout": breakout,
                 "FT": ft, "INTRA": intraday, "Confluence": conf_count,
@@ -709,14 +731,26 @@ def scan_core(market: dict, balance: float, top_n: int = 5,
         prog.empty()
 
     if not candidates:
-        return pd.DataFrame(), pd.DataFrame(debug_log), {}, regime
+        return pd.DataFrame(), pd.DataFrame(debug_log), {}, regime, sector_df
 
     thresholds = get_dynamic_thresholds([c["Score"] for c in candidates])
-    scan_df    = pd.DataFrame(candidates).sort_values("Score", ascending=False)
-    scan_df["Action"] = scan_df.apply(entry_system, axis=1)
+
+    # [B1] Pass thresholds eksplisit ke entry_system agar aman di background thread
+    cyber_params = {}
+    try:
+        cyber_params = st.session_state.cybernetic_params
+    except Exception:
+        _st = load_state()
+        cyber_params = _st.get("cybernetic_params", DEFAULT_CYBER.copy())
+
+    scan_df = pd.DataFrame(candidates).sort_values("Score", ascending=False)
+    scan_df["Action"] = scan_df.apply(
+        lambda r: entry_system(r, thresholds=thresholds, cyber_params=cyber_params),
+        axis=1
+    )
     scan_df = scan_df[scan_df["Action"] != "❌ SKIP"].head(top_n)
 
-    return scan_df, pd.DataFrame(debug_log), thresholds, regime
+    return scan_df, pd.DataFrame(debug_log), thresholds, regime, sector_df
 
 # ============================================================
 # RUN SCANNER (UI) — [F1] pakai scan_core
@@ -730,12 +764,8 @@ def run_scanner():
     cybernetic_feedback_engine(st.session_state.journal,
                                st.session_state.get("last_regime", "-"))
 
-    sector_power = sector_momentum(market, SECTOR_MAP)
-    st.session_state.sector_table = pd.DataFrame(
-        [{"Sector": k, "Strength": round(v, 2)} for k, v in sector_power.items()]
-    ).sort_values("Strength", ascending=False)
-
-    scan_df, debug_df, thresholds, regime = scan_core(
+    # [K6] scan_core handle sector_momentum sekaligus — tidak duplikat
+    scan_df, debug_df, thresholds, regime, sector_df = scan_core(
         market, st.session_state.balance,
         top_n=TOP_N_RESULTS, show_progress=True
     )
@@ -744,6 +774,7 @@ def run_scanner():
     st.session_state.dynamic_thresholds = thresholds
     st.session_state.debug_log          = debug_df.to_dict("records") if not debug_df.empty else []
     st.session_state.scan_result        = scan_df
+    st.session_state.sector_table       = sector_df   # [K7] dari scan_core langsung
 
     if scan_df.empty:
         return
@@ -834,7 +865,8 @@ def auto_scan_background():
         balance = _state.get("balance", 800_000)
         sig_lock = _state.get("signal_lock", {})
 
-        scan_df, _, thresholds, regime = scan_core(
+        # [B1] scan_core sekarang return 5-tuple termasuk sector_df
+        scan_df, _, thresholds, regime, _ = scan_core(
             market, balance, top_n=5, show_progress=False
         )
 
@@ -937,7 +969,7 @@ st.set_page_config(layout="wide", page_title="ATS SuperEngine V4.0")
 
 def next_scan_label() -> str:
     now_wib = datetime.now(WIB)
-    if now_wib.weekday() >= 5 or now_wib.date() in IDX_HOLIDAYS_2025:
+    if now_wib.weekday() >= 5 or is_holiday(now_wib.date()):
         return "Hari bursa berikutnya 09:05 WIB"
     for sched in SCAN_SCHEDULE:
         t = now_wib.replace(hour=sched["hour"], minute=sched["minute"], second=0)
@@ -960,7 +992,7 @@ col_title, col_info = st.columns([3, 1])
 with col_title:
     st.title("ATS SuperEngine V4.0")
     market_status = "🟢 BUKA" if is_market_open() else "🔴 TUTUP"
-    holiday_note  = " 🏖️ Libur" if (datetime.now(WIB).date() in IDX_HOLIDAYS_2025) else ""
+    holiday_note  = " 🏖️ Libur" if is_holiday(datetime.now(WIB).date()) else ""
     st.caption(
         f"🕐 {get_wib_now()}  |  Bursa IDX: {market_status}{holiday_note}  |  "
         f"Regime: {st.session_state.get('last_regime', '-')}  |  "
