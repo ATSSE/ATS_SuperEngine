@@ -51,10 +51,22 @@ ACTIVE_FILE     = "active_trades.csv"
 # ============================================================
 # VERSION HISTORY
 # ============================================================
-APP_VERSION  = "V4.2"
+APP_VERSION  = "V4.2b"
 APP_UPDATED  = "27 Apr 2025"
 
 VERSION_HISTORY = [
+    {
+        "versi":   "V4.2b",
+        "tanggal": "27 Apr 2025",
+        "tipe":    "Hotfix",
+        "ringkasan": "Revert FOMO bias + fix display versi & nama hari",
+        "detail": [
+            "REVERT early_mover_bonus — memberi bonus score untuk saham yang sudah naik adalah FOMO bias",
+            "Fix How To Use: judul sekarang ikut APP_VERSION otomatis",
+            "Fix next_scan_label: tampilkan nama hari (Selasa/Rabu) bukan hanya 'Besok'",
+            "Score lebih bersih: tidak ada reward untuk momentum yang sudah terjadi",
+        ]
+    },
     {
         "versi":   "V4.2",
         "tanggal": "27 Apr 2025",
@@ -63,7 +75,7 @@ VERSION_HISTORY = [
         "detail": [
             "Scan ke-5 ditambahkan jam 09:30 WIB — tangkap momentum 30 menit pertama",
             "Entry freshness diperkuat: VALID breakout boleh +7%, WEAK +5%, tanpa breakout +3%",
-            "Early mover bonus score: saham breakout VALID + naik >1.5% dapat boost +2-4 poin",
+            "Early mover bonus score (di-revert di V4.2b karena FOMO bias)",
             "Jadwal How To Use diperbarui menampilkan 5 waktu scan",
         ]
     },
@@ -875,13 +887,7 @@ def scan_core(market: dict, balance: float, top_n: int = 5,
             if ft == 2:                     score += 1
             if last_price > ema_val * 1.01: score += 1
 
-            # Early mover bonus: saham yang sudah bergerak dengan breakout VALID
-            # mendapat boost score — ini yang kita ingin tangkap
-            if breakout == "VALID" and chg_pct > 1.5:   score += 2   # strong breakout mover
-            if breakout == "VALID" and chg_pct > 3.0:   score += 2   # very strong mover
-            if breakout == "WEAK"  and chg_pct > 1.0:   score += 1   # weak breakout mover
-
-            score = min(100.0, score)       # [B2] cap SETELAH semua bonus
+            score = min(100.0, score)       # cap setelah semua bonus
 
             debug_log.append({"Ticker": tkr_clean, "Sector": sector,
                 "RSI": round(rsi_value, 1), "EMA_OK": "✅" if ema_ok else "❌",
@@ -1154,14 +1160,27 @@ _scheduler = start_scheduler()
 st.set_page_config(layout="wide", page_title="ATS SuperEngine V4.0")
 
 def next_scan_label() -> str:
-    now_wib = datetime.now(WIB)
+    now_wib   = datetime.now(WIB)
+    hari_map  = {0:"Senin",1:"Selasa",2:"Rabu",3:"Kamis",4:"Jumat",5:"Sabtu",6:"Minggu"}
+
+    # Kalau hari ini weekend/libur, cari hari bursa berikutnya
     if now_wib.weekday() >= 5 or is_holiday(now_wib.date()):
-        return "Hari bursa berikutnya 09:05 WIB"
+        next_day = now_wib + timedelta(days=1)
+        while next_day.weekday() >= 5 or is_holiday(next_day.date()):
+            next_day += timedelta(days=1)
+        return f"{hari_map[next_day.weekday()]} 09:05 WIB (Pre-Open)"
+
+    # Cari slot berikutnya hari ini
     for sched in SCAN_SCHEDULE:
         t = now_wib.replace(hour=sched["hour"], minute=sched["minute"], second=0)
         if now_wib < t:
             return f"{sched['hour']:02d}:{sched['minute']:02d} WIB ({sched['label']})"
-    return "Besok 09:05 WIB"
+
+    # Semua slot hari ini sudah lewat → cari hari bursa berikutnya
+    next_day = now_wib + timedelta(days=1)
+    while next_day.weekday() >= 5 or is_holiday(next_day.date()):
+        next_day += timedelta(days=1)
+    return f"{hari_map[next_day.weekday()]} 09:05 WIB (Pre-Open)"
 
 st.markdown("""
     <style>
@@ -1195,7 +1214,7 @@ tabs = st.tabs(["📖 HOW TO USE", "📊 TRADING DESK", "💼 ACCOUNT", "📋 RE
 # TAB 0 — HOW TO USE
 # ─────────────────────────────────────────────────────────────
 with tabs[0]:
-    st.markdown("## 📖 Panduan Penggunaan ATS SuperEngine V4.0")
+    st.markdown(f"## 📖 Panduan Penggunaan ATS SuperEngine {APP_VERSION}")
     st.markdown("#### *Scanner Saham Syariah Otomatis — Mudah, Disiplin, Berkah*")
     st.markdown("---")
 
