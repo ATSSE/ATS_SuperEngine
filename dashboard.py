@@ -1931,40 +1931,61 @@ div[data-testid="stButton"] > button:not([kind="primary"]) {
 </style>
 """, unsafe_allow_html=True)
 
-# ── HEADER premium ────────────────────────────────────────────
+# ── HEADER premium — semua variabel di-extract dulu ─────────
 market_open    = is_market_open()
 market_status  = "BUKA" if market_open else "TUTUP"
 market_class   = "status-open" if market_open else "status-closed"
-holiday_note   = " · 🏖️ Libur Nasional" if is_holiday(datetime.now(WIB).date()) else ""
+holiday_note   = " · Libur Nasional" if is_holiday(datetime.now(WIB).date()) else ""
 regime         = st.session_state.get("last_regime", "-")
 regime_emoji   = "🟢" if regime == "BULLISH" else ("🔴" if regime in ["DISTRIBUTION","BEARISH"] else "🟡")
 cp             = st.session_state.cybernetic_params
+min_score_val  = int(cp.get("min_score", 70))          # [fix] hindari cp["key"] di f-string
 intra_n        = sum(1 for v in st.session_state.get("intraday_info",{}).values()
                      if v.get("status") in ("updated","appended"))
+wib_now_str    = get_wib_now()
+next_scan_str  = next_scan_label()
+app_ver_str    = str(APP_VERSION)
+app_upd_str    = str(APP_UPDATED)
 
-st.markdown(f"""
-<div class="ats-header">
-    <div>
-        <div class="ats-logo">⚡ ATS SuperEngine {APP_VERSION}</div>
-        <div class="ats-subtitle">Automated Trading Scanner · Saham Syariah ISSI · AI-Powered</div>
-        <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px;">
-            <span class="status-pill {market_class}">● IDX {market_status}{holiday_note}</span>
-            <span class="status-pill status-info">{regime_emoji} {regime}</span>
-            <span class="status-pill status-info">🕐 {get_wib_now()}</span>
-            <span class="status-pill status-info">⏰ {next_scan_label()}</span>
-            {('<span class="status-pill status-open">⚡ Intraday ' + str(intra_n) + ' ticker</span>') if intra_n > 0 else ''}
-        </div>
-    </div>
-    <div class="header-right">
-        <div style="font-size:11px;color:rgba(148,163,184,0.6);text-align:right;">Min Score Adaptif</div>
-        <div style="font-size:32px;font-weight:700;
-                    background:linear-gradient(90deg,#60a5fa,#3b82f6);
-                    -webkit-background-clip:text;-webkit-text-fill-color:transparent;
-                    background-clip:text;line-height:1.1;">{cp["min_score"]}</div>
-        <div style="font-size:10px;color:rgba(148,163,184,0.5);">Update: {APP_UPDATED}</div>
-    </div>
-</div>
-""", unsafe_allow_html=True)
+# Intraday pill — dibangun terpisah agar tidak ada nested quote di f-string
+intra_pill = (
+    f'<span class="status-pill status-open">⚡ Intraday {intra_n} ticker</span>'
+    if intra_n > 0 else ""
+)
+
+# Min score style — CSS dipisah ke variabel agar tidak multi-line di f-string
+score_style = (
+    "font-size:32px;font-weight:700;"
+    "background:linear-gradient(90deg,#60a5fa,#3b82f6);"
+    "-webkit-background-clip:text;"
+    "-webkit-text-fill-color:transparent;"
+    "background-clip:text;"
+    "line-height:1.1;"
+)
+
+# Build HTML header sepenuhnya terpisah dari st.markdown
+header_html = (
+    '<div class="ats-header">'
+      '<div>'
+        f'<div class="ats-logo">⚡ ATS SuperEngine {app_ver_str}</div>'
+        '<div class="ats-subtitle">Automated Trading Scanner · Saham Syariah ISSI · AI-Powered</div>'
+        '<div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px;">'
+          f'<span class="status-pill {market_class}">● IDX {market_status}{holiday_note}</span>'
+          f'<span class="status-pill status-info">{regime_emoji} {regime}</span>'
+          f'<span class="status-pill status-info">🕐 {wib_now_str}</span>'
+          f'<span class="status-pill status-info">⏰ {next_scan_str}</span>'
+          f'{intra_pill}'
+        '</div>'
+      '</div>'
+      '<div class="header-right">'
+        '<div style="font-size:11px;color:rgba(148,163,184,0.6);text-align:right;">Min Score Adaptif</div>'
+        f'<div style="{score_style}">{min_score_val}</div>'
+        f'<div style="font-size:10px;color:rgba(148,163,184,0.5);">Update: {app_upd_str}</div>'
+      '</div>'
+    '</div>'
+)
+
+st.markdown(header_html, unsafe_allow_html=True)
 
 tabs = st.tabs(["📖 HOW TO USE", "📊 TRADING DESK", "💼 ACCOUNT", "📋 REPORT", "🕌 ISSI CHECK", "🔬 DEEP ANALYSIS"])
 
