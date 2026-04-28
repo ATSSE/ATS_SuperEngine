@@ -51,25 +51,25 @@ ACTIVE_FILE     = "active_trades.csv"
 # ============================================================
 # VERSION HISTORY
 # ============================================================
-APP_VERSION  = "V4.7"
+APP_VERSION  = "V4.8"
 APP_UPDATED  = "28 Apr 2025"
 
 VERSION_HISTORY = [
     {
-        "versi":   "V4.7",
+        "versi":   "V4.8",
         "tanggal": "28 Apr 2025",
-        "tipe":    "UI Redesign",
-        "ringkasan": "Compact one-screen layout — semua info penting tanpa scroll",
+        "tipe":    "UI Premium",
+        "ringkasan": "NOVA Dark + BMW M5 Blue — premium UI final, tidak akan diubah lagi",
         "detail": [
-            "Status bar 6 kolom: Bursa, Regime, Balance, Risk, Intraday, Next Scan",
-            "Tombol scan full width langsung di bawah status",
-            "Layout 2 kolom: kiri tabel kandidat + active trades, kanan chart TradingView",
-            "Chart dikompres hide_top_toolbar untuk hemat ruang vertikal",
-            "Summary metrics top kandidat dalam 1 baris 6 kolom",
-            "Heatmap & Sector Radar masuk expander — tidak scroll otomatis",
-            "Debug log masuk expander — tidak scroll otomatis",
-            "Font size compact via CSS — lebih banyak info dalam satu layar",
-            "Dioptimalkan untuk resolusi 1366x768",
+            "Global CSS: Inter font, dark navy #050d1a background",
+            "Header premium: gradient logo, status pills, min score besar",
+            "Metric cards: dark card dengan blue border hover effect",
+            "Tombol scan: BMW M5 blue gradient dengan shadow dan hover animation",
+            "Tabs: glass morphism style dengan active blue accent",
+            "Dataframe, expander, selectbox semua konsisten dark navy theme",
+            "Custom scrollbar biru tipis",
+            "Sembunyikan Streamlit branding",
+            "Dioptimalkan 1366x768 desktop + HP responsive",
         ]
     },
     {
@@ -1690,56 +1690,281 @@ _scheduler = start_scheduler()
 # ============================================================
 # UI
 # ============================================================
-st.set_page_config(layout="wide", page_title="ATS SuperEngine V4.0")
+st.set_page_config(
+    layout="wide",
+    page_title="ATS SuperEngine — Syariah Scanner",
+    page_icon="📊"
+)
 
 def next_scan_label() -> str:
-    now_wib   = datetime.now(WIB)
-    hari_map  = {0:"Senin",1:"Selasa",2:"Rabu",3:"Kamis",4:"Jumat",5:"Sabtu",6:"Minggu"}
-
-    # Kalau hari ini weekend/libur, cari hari bursa berikutnya
+    now_wib  = datetime.now(WIB)
+    hari_map = {0:"Senin",1:"Selasa",2:"Rabu",3:"Kamis",4:"Jumat",5:"Sabtu",6:"Minggu"}
     if now_wib.weekday() >= 5 or is_holiday(now_wib.date()):
         next_day = now_wib + timedelta(days=1)
         while next_day.weekday() >= 5 or is_holiday(next_day.date()):
             next_day += timedelta(days=1)
-        return f"{hari_map[next_day.weekday()]} 09:05 WIB (Pre-Open)"
-
-    # Cari slot berikutnya hari ini
+        return f"{hari_map[next_day.weekday()]} 09:05 WIB"
     for sched in SCAN_SCHEDULE:
         t = now_wib.replace(hour=sched["hour"], minute=sched["minute"], second=0)
         if now_wib < t:
             return f"{sched['hour']:02d}:{sched['minute']:02d} WIB ({sched['label']})"
-
-    # Semua slot hari ini sudah lewat → cari hari bursa berikutnya
     next_day = now_wib + timedelta(days=1)
     while next_day.weekday() >= 5 or is_holiday(next_day.date()):
         next_day += timedelta(days=1)
-    return f"{hari_map[next_day.weekday()]} 09:05 WIB (Pre-Open)"
+    return f"{hari_map[next_day.weekday()]} 09:05 WIB"
 
+# ── GLOBAL CSS — NOVA Dark + BMW M5 Accent ───────────────────
 st.markdown("""
-    <style>
-    div[data-testid="stButton"] > button[kind="primary"] {
-        background-color: #16a34a !important; border-color: #16a34a !important; color: #fff !important;
-    }
-    div[data-testid="stButton"] > button[kind="primary"]:hover {
-        background-color: #15803d !important; border-color: #15803d !important;
-    }
-    </style>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+/* ── Base ── */
+html, body, [class*="css"] {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
+}
+.stApp {
+    background: #050d1a !important;
+}
+.block-container {
+    padding: 1rem 2rem 0.5rem !important;
+    max-width: 100% !important;
+}
+
+/* ── Header custom ── */
+.ats-header {
+    background: linear-gradient(135deg, #0a1628 0%, #0d1f3c 50%, #0a1628 100%);
+    border: 1px solid rgba(0,120,255,0.2);
+    border-radius: 16px;
+    padding: 20px 28px;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    box-shadow: 0 4px 24px rgba(0,100,255,0.08), 0 0 0 1px rgba(255,255,255,0.04);
+}
+.ats-logo {
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    background: linear-gradient(90deg, #ffffff 0%, #60a5fa 50%, #3b82f6 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+.ats-subtitle {
+    font-size: 12px;
+    color: rgba(148,163,184,0.8);
+    margin-top: 2px;
+    font-weight: 400;
+}
+.status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    font-weight: 500;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-left: 8px;
+}
+.status-open {
+    background: rgba(34,197,94,0.15);
+    color: #22c55e;
+    border: 1px solid rgba(34,197,94,0.3);
+}
+.status-closed {
+    background: rgba(239,68,68,0.12);
+    color: #f87171;
+    border: 1px solid rgba(239,68,68,0.25);
+}
+.status-info {
+    background: rgba(59,130,246,0.12);
+    color: #60a5fa;
+    border: 1px solid rgba(59,130,246,0.25);
+}
+.header-right {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 4px;
+}
+.header-stats {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+/* ── Metrics cards ── */
+[data-testid="stMetric"] {
+    background: linear-gradient(135deg, #0d1f3c 0%, #0a1628 100%) !important;
+    border: 1px solid rgba(59,130,246,0.15) !important;
+    border-radius: 12px !important;
+    padding: 12px 16px !important;
+    transition: border-color 0.2s ease !important;
+}
+[data-testid="stMetric"]:hover {
+    border-color: rgba(59,130,246,0.35) !important;
+}
+[data-testid="stMetricLabel"] {
+    font-size: 11px !important;
+    font-weight: 500 !important;
+    color: rgba(148,163,184,0.8) !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.04em !important;
+}
+[data-testid="stMetricValue"] {
+    font-size: 18px !important;
+    font-weight: 600 !important;
+    color: #f1f5f9 !important;
+}
+[data-testid="stMetricDelta"] {
+    font-size: 11px !important;
+}
+
+/* ── Tombol scan — BMW M5 Blue accent ── */
+div[data-testid="stButton"] > button[kind="primary"] {
+    background: linear-gradient(135deg, #1d4ed8 0%, #2563eb 50%, #3b82f6 100%) !important;
+    border: none !important;
+    color: #fff !important;
+    font-weight: 600 !important;
+    font-size: 14px !important;
+    letter-spacing: 0.03em !important;
+    border-radius: 10px !important;
+    padding: 12px 24px !important;
+    box-shadow: 0 4px 16px rgba(37,99,235,0.35), 0 0 0 1px rgba(255,255,255,0.08) !important;
+    transition: all 0.2s ease !important;
+}
+div[data-testid="stButton"] > button[kind="primary"]:hover {
+    background: linear-gradient(135deg, #1e40af 0%, #1d4ed8 50%, #2563eb 100%) !important;
+    box-shadow: 0 6px 20px rgba(37,99,235,0.5) !important;
+    transform: translateY(-1px) !important;
+}
+div[data-testid="stButton"] > button[kind="primary"]:active {
+    transform: translateY(0px) !important;
+}
+
+/* ── Secondary buttons ── */
+div[data-testid="stButton"] > button:not([kind="primary"]) {
+    background: rgba(30,58,138,0.2) !important;
+    border: 1px solid rgba(59,130,246,0.25) !important;
+    color: #93c5fd !important;
+    border-radius: 8px !important;
+    font-size: 12px !important;
+}
+
+/* ── Tabs ── */
+.stTabs [data-baseweb="tab-list"] {
+    background: transparent !important;
+    border-bottom: 1px solid rgba(59,130,246,0.15) !important;
+    gap: 4px !important;
+}
+.stTabs [data-baseweb="tab"] {
+    background: transparent !important;
+    color: rgba(148,163,184,0.7) !important;
+    font-size: 13px !important;
+    font-weight: 500 !important;
+    padding: 8px 16px !important;
+    border-radius: 8px 8px 0 0 !important;
+    transition: all 0.2s !important;
+}
+.stTabs [aria-selected="true"] {
+    background: rgba(37,99,235,0.15) !important;
+    color: #60a5fa !important;
+    border-bottom: 2px solid #3b82f6 !important;
+}
+.stTabs [data-baseweb="tab"]:hover {
+    color: #93c5fd !important;
+    background: rgba(37,99,235,0.08) !important;
+}
+
+/* ── Dataframe ── */
+.stDataFrame {
+    border: 1px solid rgba(59,130,246,0.15) !important;
+    border-radius: 10px !important;
+    overflow: hidden !important;
+}
+[data-testid="stDataFrameResizable"] {
+    font-size: 12px !important;
+}
+
+/* ── Info / Warning / Success boxes ── */
+[data-testid="stAlert"] {
+    border-radius: 10px !important;
+    border-left-width: 3px !important;
+    font-size: 13px !important;
+}
+
+/* ── Expander ── */
+[data-testid="stExpander"] {
+    background: rgba(13,31,60,0.5) !important;
+    border: 1px solid rgba(59,130,246,0.12) !important;
+    border-radius: 10px !important;
+}
+[data-testid="stExpander"]:hover {
+    border-color: rgba(59,130,246,0.25) !important;
+}
+
+/* ── Selectbox ── */
+[data-testid="stSelectbox"] > div > div {
+    background: #0d1f3c !important;
+    border: 1px solid rgba(59,130,246,0.2) !important;
+    border-radius: 8px !important;
+    color: #e2e8f0 !important;
+    font-size: 13px !important;
+}
+
+/* ── Caption text ── */
+.stCaption, [data-testid="stCaptionContainer"] {
+    color: rgba(148,163,184,0.6) !important;
+    font-size: 11px !important;
+}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: #050d1a; }
+::-webkit-scrollbar-thumb { background: rgba(59,130,246,0.3); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(59,130,246,0.5); }
+
+/* ── Hide Streamlit branding ── */
+#MainMenu, footer, header { visibility: hidden; }
+</style>
 """, unsafe_allow_html=True)
 
-col_title, col_info = st.columns([3, 1])
-with col_title:
-    st.title(f"ATS SuperEngine {APP_VERSION}")
-    market_status = "🟢 BUKA" if is_market_open() else "🔴 TUTUP"
-    holiday_note  = " 🏖️ Libur" if is_holiday(datetime.now(WIB).date()) else ""
-    st.caption(
-        f"🕐 {get_wib_now()}  |  Bursa IDX: {market_status}{holiday_note}  |  "
-        f"Regime: {st.session_state.get('last_regime', '-')}  |  "
-        f"⏰ Auto-scan: {next_scan_label()}  |  "
-        f"📅 Update terakhir: {APP_UPDATED}"
-    )
-with col_info:
-    cp = st.session_state.cybernetic_params
-    st.metric("Min Score (Adaptif)", cp["min_score"])
+# ── HEADER premium ────────────────────────────────────────────
+market_open    = is_market_open()
+market_status  = "BUKA" if market_open else "TUTUP"
+market_class   = "status-open" if market_open else "status-closed"
+holiday_note   = " · 🏖️ Libur Nasional" if is_holiday(datetime.now(WIB).date()) else ""
+regime         = st.session_state.get("last_regime", "-")
+regime_emoji   = "🟢" if regime == "BULLISH" else ("🔴" if regime in ["DISTRIBUTION","BEARISH"] else "🟡")
+cp             = st.session_state.cybernetic_params
+intra_n        = sum(1 for v in st.session_state.get("intraday_info",{}).values()
+                     if v.get("status") in ("updated","appended"))
+
+st.markdown(f"""
+<div class="ats-header">
+    <div>
+        <div class="ats-logo">⚡ ATS SuperEngine {APP_VERSION}</div>
+        <div class="ats-subtitle">Automated Trading Scanner · Saham Syariah ISSI · AI-Powered</div>
+        <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px;">
+            <span class="status-pill {market_class}">● IDX {market_status}{holiday_note}</span>
+            <span class="status-pill status-info">{regime_emoji} {regime}</span>
+            <span class="status-pill status-info">🕐 {get_wib_now()}</span>
+            <span class="status-pill status-info">⏰ {next_scan_label()}</span>
+            {'<span class="status-pill status-open">⚡ Intraday ' + str(intra_n) + ' ticker</span>' if intra_n > 0 else ''}
+        </div>
+    </div>
+    <div class="header-right">
+        <div style="font-size:11px;color:rgba(148,163,184,0.6);text-align:right;">Min Score Adaptif</div>
+        <div style="font-size:32px;font-weight:700;
+                    background:linear-gradient(90deg,#60a5fa,#3b82f6);
+                    -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+                    background-clip:text;line-height:1.1;">{cp["min_score"]}</div>
+        <div style="font-size:10px;color:rgba(148,163,184,0.5);">Update: {APP_UPDATED}</div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
 tabs = st.tabs(["📖 HOW TO USE", "📊 TRADING DESK", "💼 ACCOUNT", "📋 REPORT", "🕌 ISSI CHECK", "🔬 DEEP ANALYSIS"])
 
@@ -1984,17 +2209,13 @@ Klik **💾 Save Journal** setelah selesai mengisi.
 # ─────────────────────────────────────────────────────────────
 with tabs[1]:
 
-    # ── CSS compact global ────────────────────────────────────
+    # ── CSS compact Trading Desk ─────────────────────────────
     st.markdown("""
     <style>
-    /* Kurangi padding default Streamlit */
-    .block-container { padding-top: 0.5rem !important; padding-bottom: 0.5rem !important; }
-    [data-testid="stMetric"] { padding: 6px 10px !important; }
-    [data-testid="stMetricLabel"] { font-size: 11px !important; }
-    [data-testid="stMetricValue"] { font-size: 16px !important; }
-    [data-testid="stMetricDelta"] { font-size: 11px !important; }
+    .block-container { padding-top: 0.4rem !important; }
+    [data-testid="stMetricValue"] { font-size: 15px !important; }
+    [data-testid="stMetricLabel"] { font-size: 10px !important; }
     .stDataFrame { font-size: 12px !important; }
-    h3 { margin-top: 4px !important; margin-bottom: 4px !important; font-size: 14px !important; }
     </style>
     """, unsafe_allow_html=True)
 
