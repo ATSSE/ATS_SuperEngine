@@ -1952,7 +1952,7 @@ st.markdown(f"""
             <span class="status-pill status-info">{regime_emoji} {regime}</span>
             <span class="status-pill status-info">🕐 {get_wib_now()}</span>
             <span class="status-pill status-info">⏰ {next_scan_label()}</span>
-            {'<span class="status-pill status-open">⚡ Intraday ' + str(intra_n) + ' ticker</span>' if intra_n > 0 else ''}
+            {('<span class="status-pill status-open">⚡ Intraday ' + str(intra_n) + ' ticker</span>') if intra_n > 0 else ''}
         </div>
     </div>
     <div class="header-right">
@@ -2369,8 +2369,71 @@ with tabs[1]:
     elif st.session_state.scan_result is not None:
         st.warning("⚠️ Tidak ada kandidat hari ini — market sedang tidak kondusif.")
 
-    # ── SECONDARY (collapse default) ────────────────────────
-    # Debug & Scan detail
+    # ── Heatmap langsung (tidak di expander) ─────────────────
+    has_heatmap = st.session_state.heatmap_data is not None and not st.session_state.heatmap_data.empty
+    has_sector  = st.session_state.sector_table is not None
+
+    if has_heatmap:
+        st.markdown("---")
+        hdf = st.session_state.heatmap_data.copy()
+        n_green   = (hdf["Change%"] > 0).sum()
+        n_red     = (hdf["Change%"] < 0).sum()
+        n_flat    = (hdf["Change%"] == 0).sum()
+        best_tkr  = hdf.loc[hdf["Change%"].idxmax(), "Ticker"]
+        best_chg  = hdf["Change%"].max()
+        worst_tkr = hdf.loc[hdf["Change%"].idxmin(), "Ticker"]
+        worst_chg = hdf["Change%"].min()
+        avg_chg   = hdf["Change%"].mean()
+
+        hm1, hm2, hm3, hm4, hm5 = st.columns(5)
+        hm1.metric("Naik",       f"{n_green} saham", f"{avg_chg:+.2f}% avg")
+        hm2.metric("Turun",      f"{n_red} saham")
+        hm3.metric("Flat",       f"{n_flat} saham")
+        hm4.metric("Top Gainer", best_tkr,  f"{best_chg:+.2f}%")
+        hm5.metric("Top Loser",  worst_tkr, f"{worst_chg:+.2f}%")
+
+        fig_heat = px.treemap(
+            hdf, path=["Sektor","Ticker"], values="Size", color="Change%",
+            color_continuous_scale=["#7f1d1d","#dc2626","#fca5a5",
+                                    "#f1f5f9","#86efac","#16a34a","#14532d"],
+            color_continuous_midpoint=0, range_color=[-5,5],
+            custom_data=["Change%","Sektor"],
+        )
+        fig_heat.update_traces(
+            texttemplate="<b>%{label}</b><br>%{customdata[0]:+.2f}%",
+            textfont_size=10,
+            hovertemplate="<b>%{label}</b><br>%{customdata[1]}<br>%{customdata[0]:+.2f}%<extra></extra>",
+            marker_line_width=0.5,
+        )
+        fig_heat.update_layout(
+            height=400, margin=dict(t=5,b=5,l=5,r=5),
+            paper_bgcolor="rgba(0,0,0,0)",
+            coloraxis_colorbar=dict(
+                title="Chg%", tickvals=[-5,-3,-1,0,1,3,5],
+                ticktext=["-5%","-3%","-1%","0","+1%","+3%","+5%"], len=0.8,
+            ),
+        )
+        st.plotly_chart(fig_heat, use_container_width=True)
+        st.caption("Ukuran kotak = estimasi nilai transaksi harian (Rp miliar) · Klik sektor untuk zoom")
+
+    if has_sector:
+        fig_sec = px.bar(
+            st.session_state.sector_table,
+            x="Strength", y="Sector", orientation="h", color="Strength",
+            color_continuous_scale=["#dc2626","#f59e0b","#16a34a"],
+        )
+        fig_sec.add_vline(x=0, line_width=1, line_color="rgba(255,255,255,0.15)")
+        fig_sec.update_layout(
+            height=320, showlegend=False,
+            margin=dict(t=5,b=5,l=5,r=5),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
+            yaxis=dict(gridcolor="rgba(0,0,0,0)"),
+        )
+        st.plotly_chart(fig_sec, use_container_width=True)
+
+    # Debug dalam expander
     if st.session_state.debug_log:
         debug_df = pd.DataFrame(st.session_state.debug_log)
         gugur_counts = (
@@ -2417,68 +2480,6 @@ with tabs[1]:
             st.dataframe(filtered.style.apply(color_rows, axis=1),
                 use_container_width=True, hide_index=True,
                 column_config={c: st.column_config.TextColumn(c) for c in filtered.columns})
-
-    # Heatmap + Sector Radar dalam expander
-    has_heatmap = st.session_state.heatmap_data is not None and not st.session_state.heatmap_data.empty
-    has_sector  = st.session_state.sector_table is not None
-
-    if has_heatmap or has_sector:
-        with st.expander("🌡️ Market Heatmap & Sector Radar", expanded=False):
-            if has_heatmap:
-                hdf = st.session_state.heatmap_data.copy()
-                n_green  = (hdf["Change%"] > 0).sum()
-                n_red    = (hdf["Change%"] < 0).sum()
-                best_tkr  = hdf.loc[hdf["Change%"].idxmax(), "Ticker"]
-                best_chg  = hdf["Change%"].max()
-                worst_tkr = hdf.loc[hdf["Change%"].idxmin(), "Ticker"]
-                worst_chg = hdf["Change%"].min()
-                avg_chg   = hdf["Change%"].mean()
-
-                hm1,hm2,hm3,hm4,hm5 = st.columns(5)
-                hm1.metric("Naik",       f"{n_green}")
-                hm2.metric("Turun",      f"{n_red}")
-                hm3.metric("Avg",        f"{avg_chg:+.2f}%")
-                hm4.metric("Top Gainer", best_tkr,  f"{best_chg:+.2f}%")
-                hm5.metric("Top Loser",  worst_tkr, f"{worst_chg:+.2f}%")
-
-                fig_heat = px.treemap(
-                    hdf, path=["Sektor","Ticker"], values="Size", color="Change%",
-                    color_continuous_scale=["#7f1d1d","#dc2626","#fca5a5",
-                                            "#f1f5f9","#86efac","#16a34a","#14532d"],
-                    color_continuous_midpoint=0, range_color=[-5,5],
-                    custom_data=["Change%","Sektor"],
-                )
-                fig_heat.update_traces(
-                    texttemplate="<b>%{label}</b><br>%{customdata[0]:+.2f}%",
-                    textfont_size=10,
-                    hovertemplate="<b>%{label}</b><br>%{customdata[1]}<br>%{customdata[0]:+.2f}%<extra></extra>",
-                    marker_line_width=0.5,
-                )
-                fig_heat.update_layout(
-                    height=380, margin=dict(t=5,b=5,l=5,r=5),
-                    paper_bgcolor="rgba(0,0,0,0)",
-                    coloraxis_colorbar=dict(
-                        title="Chg%", tickvals=[-5,-3,-1,0,1,3,5],
-                        ticktext=["-5%","-3%","-1%","0","+1%","+3%","+5%"], len=0.8,
-                    ),
-                )
-                st.plotly_chart(fig_heat, use_container_width=True)
-                st.caption("Ukuran = estimasi nilai transaksi (Rp miliar) | Klik sektor untuk zoom")
-
-            if has_sector:
-                fig_sec = px.bar(
-                    st.session_state.sector_table,
-                    x="Strength", y="Sector", orientation="h", color="Strength",
-                    color_continuous_scale=["#dc2626","#f59e0b","#16a34a"],
-                )
-                fig_sec.add_vline(x=0, line_width=1, line_color="rgba(128,128,128,0.4)")
-                fig_sec.update_layout(
-                    height=300, showlegend=False,
-                    margin=dict(t=5,b=5,l=5,r=5),
-                    paper_bgcolor="rgba(0,0,0,0)",
-                    xaxis=dict(gridcolor="rgba(128,128,128,0.15)"),
-                )
-                st.plotly_chart(fig_sec, use_container_width=True)
 
 # ─────────────────────────────────────────────────────────────
 # TAB 2 — ACCOUNT
