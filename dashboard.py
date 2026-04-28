@@ -51,23 +51,22 @@ ACTIVE_FILE     = "active_trades.csv"
 # ============================================================
 # VERSION HISTORY
 # ============================================================
-APP_VERSION  = "V4.3"
+APP_VERSION  = "V4.4"
 APP_UPDATED  = "27 Apr 2025"
 
 VERSION_HISTORY = [
     {
-        "versi":   "V4.3",
+        "versi":   "V4.4",
         "tanggal": "27 Apr 2025",
-        "tipe":    "Major Feature",
-        "ringkasan": "Tab Deep Analysis — AI powered Citadel + Bridgewater + Renaissance",
+        "tipe":    "Priority Fix",
+        "ringkasan": "P1: Telegram enriched teknikal + P2: Journal auto-fill",
         "detail": [
-            "Tambah tab 🔬 DEEP ANALYSIS — analisis AI mendalam per saham",
-            "Citadel-style: trend multi-timeframe, S/R exact, RSI/MACD/BB, Fibonacci, confidence rating",
-            "Bridgewater-style: risk assessment, worst case scenario, position sizing recommendation",
-            "Renaissance-style: seasonal patterns, day-of-week edge, statistical anomaly detection",
-            "Auto-fill ticker dari hasil scan ATS — langsung analisis sinyal yang masuk",
-            "Mini dashboard teknikal: RSI, MACD, MA50, Volume ratio sebelum AI result",
-            "Cache riwayat analisis hari ini — bisa dilihat kembali tanpa re-run",
+            "[P1] Telegram alert sekarang berisi konteks teknikal: RSI, MACD, Bollinger zone, EMA trend, Volume ratio, Indicator Alignment score",
+            "[P1] Format Telegram lebih terstruktur dengan separator — score 100, level entry, konteks teknikal, footer aksi",
+            "[P1] Alignment bar visual [████░░] 4/6 langsung terlihat di HP tanpa buka dashboard",
+            "[P2] Journal auto-fill: centang BUY → journal otomatis terisi Date, Ticker, Entry, SL, Target, Lot, Sector, Action, RR, Score",
+            "[P2] Kolom Exit & PnL dikosongkan — tinggal diisi saat close posisi",
+            "[P2] Notes otomatis: 'Auto dari ATS V4.4 | 09:30 WIB' sebagai tracking",
         ]
     },
     {
@@ -763,6 +762,153 @@ def build_heatmap_data(market: dict) -> pd.DataFrame:
     return pd.DataFrame(rows) if rows else pd.DataFrame()
 
 
+# ============================================================
+# [P1] TECHNICAL CONTEXT BUILDER — untuk Telegram enriched
+# ============================================================
+def build_technical_context(df: pd.DataFrame) -> dict:
+    """Ringkasan teknikal cepat untuk Telegram alert."""
+    try:
+        close     = df["Close"].squeeze()
+        high      = df["High"].squeeze()
+        low       = df["Low"].squeeze()
+        volume    = df["Volume"].squeeze()
+        last      = float(close.iloc[-1])
+        ema20     = float(close.ewm(span=20, adjust=False).mean().iloc[-1])
+        ema50     = float(close.ewm(span=50, adjust=False).mean().iloc[-1])
+        ema12     = close.ewm(span=12, adjust=False).mean()
+        ema26     = close.ewm(span=26, adjust=False).mean()
+        macd_h    = float((ema12 - ema26 - (ema12 - ema26).ewm(span=9, adjust=False).mean()).iloc[-1])
+        bb_mid    = float(close.tail(20).mean())
+        bb_std    = float(close.tail(20).std())
+        bb_pos    = (last - bb_mid) / (2 * bb_std) * 100 if bb_std > 0 else 0
+        rsi       = calculate_rsi(df)
+        avg_vol   = float(volume.tail(20).mean())
+        vol_ratio = float(volume.iloc[-1]) / avg_vol if avg_vol > 0 else 1.0
+        resistance= float(high.tail(20).max())
+        support   = float(low.tail(20).min())
+        dist_to_r = (resistance - last) / last * 100 if last > 0 else 0
+
+        # Alignment: berapa indikator bullish dari 6
+        alignment = sum([
+            last > ema20, last > ema50, ema20 > ema50,
+            macd_h > 0, 42 <= rsi <= 72, vol_ratio >= 1.0,
+        ])
+        return {
+            "rsi":        round(rsi, 1),
+            "macd_dir":   "↑ Bullish" if macd_h > 0 else "↓ Bearish",
+            "bb_zone":    "Atas" if bb_pos > 33 else ("Bawah" if bb_pos < -33 else "Tengah"),
+            "vol_ratio":  round(vol_ratio, 1),
+            "ema_trend":  "Golden ✅" if ema20 > ema50 else "Death ⚠️",
+            "alignment":  alignment,
+            "resistance": resistance,
+            "support":    support,
+            "dist_to_r":  round(dist_to_r, 1),
+            "ok":         True,
+        }
+    except Exception:
+        return {"ok": False}
+
+
+def format_telegram_signal(row: dict, regime: str, market: dict) -> str:
+    """
+    [P1] Build Telegram message yang kaya konteks teknikal.
+    Enriched dengan ringkasan dari build_technical_context.
+    """
+    tkr    = row.get("Ticker", "-")
+    action = row.get("Action", "-")
+    is_now = "NOW" in action
+
+    # Ambil teknikal context
+    ticker_jk = tkr + ".JK"
+    tech      = {}
+    if ticker_jk in market or tkr + ".JK" in market:
+        df_t = market.get(ticker_jk, market.get(tkr + ".JK"))
+        if df_t is not None:
+            tech = build_technical_context(df_t)
+
+    # Header
+    header = "🔥 EXECUTE NOW" if is_now else "✅ EXECUTE"
+
+    # Base info
+    base = (
+        f"{header} — ATS V{APP_VERSION}\n"
+        f"{'━'*30}\n"
+        f"📌 {tkr}  |  {row.get('Sector', '-')}\n"
+        f"⏰ {datetime.now(WIB).strftime('%H:%M WIB')}  |  Regime: {regime}\n\n"
+        f"📊 ATS SIGNAL\n"
+        f"Score      : {row.get('Score', 0):.1f}/100\n"
+        f"RR         : {row.get('RR', 0):.1f}x\n"
+        f"Confluence : {row.get('Confluence', 0)}/6\n"
+        f"Change     : {row.get('Change%', 0):+.2f}%\n"
+        f"Breakout   : {row.get('Breakout', '-')}\n\n"
+        f"💰 LEVEL TRADING\n"
+        f"Entry  : {row.get('Entry', '-')}\n"
+        f"SL     : {row.get('SL', '-')}\n"
+        f"Target : {row.get('Target', '-')}\n"
+        f"Lot    : {row.get('Lot', '-')}\n"
+    )
+
+    # Tambahkan context teknikal jika tersedia
+    if tech.get("ok"):
+        alignment_bar = "█" * tech["alignment"] + "░" * (6 - tech["alignment"])
+        tech_section = (
+            f"\n📈 TEKNIKAL CONTEXT\n"
+            f"RSI        : {tech['rsi']} "
+            f"{'⚠️OB' if tech['rsi'] > 70 else ('⚠️OS' if tech['rsi'] < 30 else '✅')}\n"
+            f"MACD       : {tech['macd_dir']}\n"
+            f"Bollinger  : Zona {tech['bb_zone']}\n"
+            f"EMA Trend  : {tech['ema_trend']}\n"
+            f"Volume     : {tech['vol_ratio']:.1f}x rata-rata\n"
+            f"Alignment  : [{alignment_bar}] {tech['alignment']}/6\n"
+            f"Jarak ke R : {tech['dist_to_r']:.1f}%\n"
+        )
+    else:
+        tech_section = ""
+
+    # Footer
+    footer = (
+        f"\n{'━'*30}\n"
+        f"{'⚡ LANGSUNG EKSEKUSI' if is_now else '✅ KONFIRMASI CHART DULU'}\n"
+        f"⚠️ Pasang SL. No FOMO. Disiplin.\n"
+        f"🔬 Deep Analysis: buka tab dashboard"
+    )
+
+    return base + tech_section + footer
+
+
+def format_telegram_signal_bg(row: dict, regime: str) -> str:
+    """
+    [P1] Versi background thread — tanpa market dict (tidak ada teknikal context).
+    Dipakai oleh auto_scan_background.
+    """
+    tkr    = row.get("Ticker", "-")
+    action = row.get("Action", "-")
+    is_now = "NOW" in action
+    header = "🔥 EXECUTE NOW" if is_now else "✅ EXECUTE"
+
+    return (
+        f"{header} — ATS V{APP_VERSION}\n"
+        f"{'━'*30}\n"
+        f"📌 {tkr}  |  {row.get('Sector', '-')}\n"
+        f"⏰ {datetime.now(WIB).strftime('%H:%M WIB')}  |  Regime: {regime}\n\n"
+        f"📊 ATS SIGNAL\n"
+        f"Score      : {row.get('Score', 0):.1f}/100\n"
+        f"RR         : {row.get('RR', 0):.1f}x\n"
+        f"Confluence : {row.get('Confluence', 0)}/6\n"
+        f"Change     : {row.get('Change%', 0):+.2f}%\n"
+        f"Breakout   : {row.get('Breakout', '-')}\n"
+        f"RSI        : {row.get('RSI', 0):.1f}\n\n"
+        f"💰 LEVEL TRADING\n"
+        f"Entry  : {row.get('Entry', '-')}\n"
+        f"SL     : {row.get('SL', '-')}\n"
+        f"Target : {row.get('Target', '-')}\n"
+        f"Lot    : {row.get('Lot', '-')}\n"
+        f"{'━'*30}\n"
+        f"{'⚡ LANGSUNG EKSEKUSI' if is_now else '✅ KONFIRMASI CHART DULU'}\n"
+        f"⚠️ Pasang SL. No FOMO."
+    )
+
+
 def scan_core(market: dict, balance: float, top_n: int = 5,
               show_progress: bool = False) -> tuple[pd.DataFrame, pd.DataFrame, dict, str, pd.DataFrame]:
     """
@@ -988,25 +1134,7 @@ def run_scanner():
             continue
 
         chg = row.get("Change%", 0)
-        msg = (
-            f"{'🔥 ATS EXECUTE NOW' if 'NOW' in action else '✅ ATS EXECUTE'}\n\n"
-            f"Ticker     : {tkr}\n"
-            f"Action     : {action}\n"
-            f"Score      : {row.get('Score', 0):.1f}\n"
-            f"RR         : {row.get('RR', 0):.1f}\n"
-            f"Change     : {chg:+.2f}%\n"   # [I6]
-            f"Confluence : {row.get('Confluence', 0)}/6\n"
-            f"RSI        : {row.get('RSI', 0):.1f}\n"
-            f"Breakout   : {row.get('Breakout', '-')}\n"
-            f"Regime     : {regime}\n"
-            f"Sector     : {row.get('Sector', '-')}\n\n"
-            f"Entry   : {row.get('Entry', '-')}\n"
-            f"SL      : {row.get('SL', '-')}\n"
-            f"Target  : {row.get('Target', '-')}\n"
-            f"Lot     : {row.get('Lot', '-')}\n\n"
-            f"{'⚡ LANGSUNG EKSEKUSI' if 'NOW' in action else '✅ TUNGGU KONFIRMASI'}\n"
-            f"⚠️ Ikuti SL. No FOMO.\n\nATS SuperEngine V4.0"
-        )
+        msg = format_telegram_signal(row, regime, market)   # [P1] enriched
         send_telegram(msg)
         st.session_state.signal_lock[tkr] = now_ts
         sent.append(tkr)
@@ -1082,25 +1210,7 @@ def auto_scan_background():
             if now_ts - sig_lock.get(tkr, 0) < lock_time: continue
 
             chg = row.get("Change%", 0)
-            msg = (
-                f"🤖 ATS AUTO-SCAN — {now_label}\n\n"
-                f"Ticker     : {tkr}\n"
-                f"Action     : {action}\n"
-                f"Score      : {row.get('Score', 0):.1f}\n"
-                f"RR         : {row.get('RR', 0):.1f}\n"
-                f"Change     : {chg:+.2f}%\n"
-                f"Confluence : {row.get('Confluence', 0)}/6\n"
-                f"RSI        : {row.get('RSI', 0):.1f}\n"
-                f"Breakout   : {row.get('Breakout', '-')}\n"
-                f"Regime     : {regime}\n"
-                f"Sector     : {row.get('Sector', '-')}\n\n"
-                f"Entry   : {row.get('Entry', '-')}\n"
-                f"SL      : {row.get('SL', '-')}\n"
-                f"Target  : {row.get('Target', '-')}\n"
-                f"Lot     : {row.get('Lot', '-')}\n\n"
-                f"{'⚡ LANGSUNG EKSEKUSI' if 'NOW' in action else '✅ TUNGGU KONFIRMASI'}\n"
-                f"⚠️ No FOMO. Gunakan SL.\n\nATS SuperEngine V4.0"
-            )
+            msg = format_telegram_signal_bg(row, regime)   # [P1] enriched background
             send_telegram(msg)
             sig_lock[tkr] = now_ts
             sent_any = True
@@ -1529,13 +1639,58 @@ with tabs[1]:
             if len(new_trades) > 0:
                 new_trades["Status"]    = "OPEN"
                 new_trades["EntryTime"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-                new_trades["ExitPrice"] = None   # [I3]
-                new_trades["ExitDate"]  = None   # [I3]
+                new_trades["ExitPrice"] = None
+                new_trades["ExitDate"]  = None
                 new_trades["PnL"]       = None
                 st.session_state.active_trades = pd.concat(
                     [st.session_state.active_trades, new_trades], ignore_index=True)
                 st.session_state.active_trades.to_csv(ACTIVE_FILE, index=False)
-                st.success(f"✅ {len(new_trades)} trade masuk Active Trades")
+
+                # [P2] AUTO-FILL JOURNAL — pre-filled dari data scan
+                JOURNAL_COLS = ["Date", "Ticker", "Entry", "SL", "Target",
+                                "Lot", "Sector", "Action", "RR", "Score",
+                                "Exit", "PnL", "Notes"]
+                journal_entries = []
+                for _, tr in new_trades.iterrows():
+                    journal_entries.append({
+                        "Date":    datetime.now().strftime("%Y-%m-%d"),
+                        "Ticker":  tr.get("Ticker", "-"),
+                        "Entry":   tr.get("Entry", "-"),
+                        "SL":      tr.get("SL", "-"),
+                        "Target":  tr.get("Target", "-"),
+                        "Lot":     tr.get("Lot", "-"),
+                        "Sector":  tr.get("Sector", "-"),
+                        "Action":  tr.get("Action", "-"),
+                        "RR":      tr.get("RR", "-"),
+                        "Score":   tr.get("Score", "-"),
+                        "Exit":    None,   # diisi saat close posisi
+                        "PnL":     None,   # diisi saat close posisi
+                        "Notes":   f"Auto dari ATS {APP_VERSION} | {datetime.now().strftime('%H:%M WIB')}",
+                    })
+
+                if journal_entries:
+                    new_journal = pd.DataFrame(journal_entries)
+                    # Pastikan kolom lengkap
+                    for col in JOURNAL_COLS:
+                        if col not in new_journal.columns:
+                            new_journal[col] = None
+                    if st.session_state.journal.empty:
+                        st.session_state.journal = new_journal[JOURNAL_COLS]
+                    else:
+                        # Tambah kolom baru ke journal lama jika perlu
+                        for col in JOURNAL_COLS:
+                            if col not in st.session_state.journal.columns:
+                                st.session_state.journal[col] = None
+                        st.session_state.journal = pd.concat(
+                            [st.session_state.journal, new_journal[JOURNAL_COLS]],
+                            ignore_index=True
+                        )
+                    st.session_state.journal.to_csv(JOURNAL_FILE, index=False)
+
+                st.success(
+                    f"✅ {len(new_trades)} trade masuk Active Trades  |  "
+                    f"📋 Journal otomatis terisi — lengkapi kolom Exit & PnL setelah close"
+                )
             else:
                 st.warning("Semua ticker sudah ada di Active Trades")
 
