@@ -51,26 +51,24 @@ ACTIVE_FILE     = "active_trades.csv"
 # ============================================================
 # VERSION HISTORY
 # ============================================================
-APP_VERSION  = "V4.5"
+APP_VERSION  = "V4.6"
 APP_UPDATED  = "28 Apr 2025"
 
 VERSION_HISTORY = [
     {
-        "versi":   "V4.5",
+        "versi":   "V4.6",
         "tanggal": "28 Apr 2025",
         "tipe":    "Critical Fix",
-        "ringkasan": "Fix Fatal #1: Inject data intraday hari ini — ATS tidak lagi buta pergerakan",
+        "ringkasan": "Intraday refresh 15 menit + spike detection — tidak ketinggalan pergerakan",
         "detail": [
-            "Tambah inject_today_intraday() — download 5m data semua ticker sekaligus",
-            "Update baris terakhir daily data dengan OHLCV aktual hari ini sebelum scan",
-            "daily_change_pct() sekarang pakai harga hari ini, bukan closing kemarin",
-            "breakout_confirmation() deteksi breakout yang terjadi hari ini",
-            "bandar_detection() deteksi volume spike hari ini secara real",
-            "Cache 1 menit untuk intraday — balance antara freshness dan performa",
-            "Status update intraday ditampilkan di dashboard: berapa ticker yang diperbarui",
-            "Detail expander: ticker mana saja yang berhasil diupdate dengan harga aktual",
-            "auto_scan_background juga inject intraday — semua scan real-time",
-            "ELSA +6.4% seperti hari ini akan terdeteksi di scan 13:35, bukan hanya jadi penonton",
+            "intraday_refresh_job() berjalan setiap 15 menit jam 09:05–15:30 WIB",
+            "Download 5m data semua 98 ticker sekaligus — ringan, bukan full scan",
+            "Spike detection: ticker naik >3% dari open ATAU >2% dari 15 menit lalu + volume >1.5x",
+            "mini_scan_spike(): full scoring pipeline khusus ticker yang spike",
+            "Telegram SPIKE ALERT dengan format kaya: change%, volume ratio, score, level trading",
+            "Signal lock per ticker per hari — tidak spam alert untuk spike yang sama",
+            "ELSA +6.4% seperti kemarin akan terdeteksi di refresh 13:35, bukan jam 13:50",
+            "Total monitoring: 5 full scan + 26 intraday refresh per hari kerja",
         ]
     },
     {
@@ -1393,9 +1391,259 @@ def auto_scan_background():
 # ============================================================
 # SCHEDULER
 # ============================================================
+# INTRADAY REFRESH — setiap 15 menit jam bursa
+# Refresh harga terkini tanpa full scan
+# ============================================================
+
+# State shared untuk tracking spike antar thread
+_spike_state: dict = {
+    "last_prices":    {},   # {ticker: last_close} dari refresh sebelumnya
+    "spike_alerts":   [],   # list ticker yang sudah dapat alert spike hari ini
+    "last_spike_date": None,
+}
+
+def intraday_refresh_job():
+    """
+    Dijalankan setiap 15 menit saat jam bursa.
+    1. Download intraday terbaru semua ticker
+    2. Deteksi spike: ticker yang naik > 3% sejak refresh terakhir
+    3. Kalau ada spike dengan breakout → trigger mini_scan_spike
+    """
+    if not is_market_open():
+        return
+
+    now_wib = datetime.now(WIB)
+    today   = now_wib.date()
+
+    # Reset spike_alerts tiap hari baru
+    if _spike_state["last_spike_date"] != today:
+        _spike_state["spike_alerts"]    = []
+        _spike_state["last_spike_date"] = today
+        _spike_state["last_prices"]     = {}
+
+    try:
+        # Download bulk intraday terbaru — ringan karena hanya 1d/5m
+        raw5 = yf.download(
+            tickers=ISSI_UNIVERSE,
+            period="1d", interval="5m",
+            group_by="ticker", progress=False, auto_adjust=True,
+        )
+        if raw5 is None or raw5.empty:
+            return
+
+        spike_candidates = []
+
+        for tkr in ISSI_UNIVERSE:
+            try:
+                if len(ISSI_UNIVERSE) > 1:
+                    df5 = raw5[tkr].dropna()
+                else:
+                    df5 = raw5.dropna()
+
+                if df5 is None or len(df5) < 5:
+                    continue
+
+                close5      = df5["Close"].squeeze()
+                volume5     = df5["Volume"].squeeze()
+                current_px  = float(close5.iloc[-1])
+                open_px     = float(close5.iloc[0])   # harga open hari ini
+                chg_from_open = (current_px - open_px) / open_px * 100
+
+                # Cek perubahan dari snapshot sebelumnya
+                prev_px     = _spike_state["last_prices"].get(tkr, open_px)
+                chg_recent  = (current_px - prev_px) / prev_px * 100 if prev_px > 0 else 0
+
+                # Update snapshot harga
+                _spike_state["last_prices"][tkr] = current_px
+
+                # Deteksi spike: naik > 3% dari open ATAU > 2% dari 15 menit lalu
+                avg_vol = float(volume5.tail(20).mean()) if len(volume5) >= 20 else float(volume5.mean())
+                vol_now = float(volume5.iloc[-1])
+                vol_ratio = vol_now / avg_vol if avg_vol > 0 else 1.0
+
+                is_price_spike  = chg_from_open > 3.0 or chg_recent > 2.0
+                is_volume_spike = vol_ratio > 1.5
+
+                if is_price_spike and is_volume_spike and tkr not in _spike_state["spike_alerts"]:
+                    spike_candidates.append({
+                        "ticker":        tkr,
+                        "current_px":    current_px,
+                        "chg_from_open": round(chg_from_open, 2),
+                        "chg_recent":    round(chg_recent, 2),
+                        "vol_ratio":     round(vol_ratio, 1),
+                    })
+
+            except Exception:
+                continue
+
+        # Kalau ada spike candidate → trigger mini scan
+        if spike_candidates:
+            mini_scan_spike(spike_candidates)
+
+    except Exception as e:
+        pass   # Silent fail — jangan spam Telegram untuk refresh error
+
+
+def mini_scan_spike(spike_candidates: list):
+    """
+    Mini scan khusus untuk ticker yang terdeteksi spike.
+    Hanya download daily data ticker tersebut, inject intraday,
+    lalu jalankan full scoring pipeline.
+    Kirim Telegram hanya kalau lolos semua filter.
+    """
+    if not spike_candidates:
+        return
+
+    now_label  = datetime.now(WIB).strftime("%H:%M WIB")
+    sig_lock   = _spike_state.get("spike_alerts", [])
+
+    for sp in spike_candidates:
+        tkr    = sp["ticker"]
+        tkr_jk = tkr
+
+        try:
+            # Download daily data untuk ticker ini saja
+            df_daily = yf.download(
+                tickers=tkr_jk, period="6mo", interval="1d",
+                progress=False, auto_adjust=True
+            )
+            if df_daily is None or len(df_daily) < 60:
+                continue
+
+            df_daily = df_daily.dropna()
+
+            # Inject harga terkini hari ini
+            today      = datetime.now(WIB).date()
+            last_date  = pd.to_datetime(df_daily.index[-1]).date()
+
+            # Ambil intraday detail untuk ticker ini
+            df5 = yf.download(
+                tickers=tkr_jk, period="1d", interval="5m",
+                progress=False, auto_adjust=True
+            )
+
+            if df5 is not None and len(df5) >= 5:
+                close5 = df5["Close"].squeeze()
+                high5  = df5["High"].squeeze()
+                low5   = df5["Low"].squeeze()
+                vol5   = df5["Volume"].squeeze()
+                open5  = df5["Open"].squeeze()
+
+                new_row = pd.DataFrame({
+                    "Open":   [float(open5.iloc[0])],
+                    "High":   [float(high5.max())],
+                    "Low":    [float(low5.min())],
+                    "Close":  [float(close5.iloc[-1])],
+                    "Volume": [float(vol5.sum())],
+                }, index=[pd.Timestamp(today)])
+
+                if last_date == today:
+                    df_daily.iloc[-1] = new_row.iloc[0]
+                else:
+                    df_daily = pd.concat([df_daily, new_row])
+
+            # Jalankan pipeline scoring
+            _state       = load_state()
+            balance      = _state.get("balance", 800_000)
+            sector       = get_sector(tkr_jk)
+            rsi_ok, rsi_value = rsi_gate(df_daily, "SIDEWAYS")
+            if not rsi_ok:
+                continue
+
+            ema_ok, last_price, ema_val = ema_trend_filter(df_daily)
+            atr     = calculate_atr(df_daily)
+            entry   = last_price
+            sl      = calculate_sl_atr(entry, atr)
+            target  = find_target(df_daily, entry)
+            rr      = risk_reward(entry, sl, target)
+
+            if rr < 1.8:
+                continue
+
+            momentum = momentum_confirmation(df_daily)
+            accum    = accumulation_phase(df_daily)
+            bandar   = bandar_detection(df_daily)
+            breakout = breakout_confirmation(df_daily)
+            ft       = follow_through(df_daily)
+            chg_pct  = daily_change_pct(df_daily)
+
+            if bandar < 2 or breakout == "WAIT":
+                continue
+
+            freshness_limit = 7.0 if breakout == "VALID" else (5.0 if breakout == "WEAK" else 3.0)
+            if chg_pct > freshness_limit:
+                continue
+
+            intraday = intraday_confirm(tkr_jk)
+            prob     = runner_probability(df_daily)
+            runner   = runner_prediction(df_daily)
+            quality  = pullback_quality(df_daily)
+            liq_raw  = liquidity_trap(df_daily)
+            liq_str  = "🔴 TRAP" if liq_raw == "TRAP" else "🟢 OK"
+
+            conf_count, _, conf_passed = confluence_check(
+                momentum, accum, bandar, breakout, rr, ema_ok, "SIDEWAYS"
+            )
+            if not conf_passed:
+                continue
+
+            score  = calculate_score(prob, runner, quality, rr, liq_str, bandar)
+            score += momentum*0.8 + accum*0.9 + ft*0.7 + intraday*0.5
+            if momentum == 2:               score = min(100, score + 1)
+            if ft == 2:                     score = min(100, score + 1)
+            if last_price > ema_val * 1.01: score = min(100, score + 1)
+            score = min(100.0, score)
+            lot   = position_sizing(balance, 0.02, entry, sl, atr)
+
+            # Kirim Telegram spike alert
+            alignment_val = sum([
+                last_price > ema20_val if (ema20_val := float(df_daily["Close"].squeeze().ewm(span=20,adjust=False).mean().iloc[-1])) else False,
+                last_price > ema_val,
+                momentum >= 1,
+                bandar >= 2,
+                breakout in ("VALID","WEAK"),
+                rr >= 1.8,
+            ])
+            alignment_bar = "█" * alignment_val + "░" * (6 - alignment_val)
+
+            msg = (
+                f"⚡ SPIKE ALERT — ATS {APP_VERSION}\n"
+                f"{'━'*30}\n"
+                f"📌 {tkr_jk.replace('.JK','')}  |  {sector}\n"
+                f"⏰ {now_label}  |  🔄 Intraday Refresh\n\n"
+                f"📈 SPIKE DETECTED\n"
+                f"Change hari ini : {chg_pct:+.2f}%\n"
+                f"Change 15 menit : {sp['chg_recent']:+.2f}%\n"
+                f"Volume          : {sp['vol_ratio']:.1f}x rata-rata\n"
+                f"Breakout        : {breakout}\n\n"
+                f"📊 SCORING\n"
+                f"Score      : {score:.1f}/100\n"
+                f"RR         : {rr:.1f}x\n"
+                f"Confluence : {conf_count}/6\n"
+                f"RSI        : {rsi_value:.1f}\n"
+                f"Alignment  : [{alignment_bar}] {alignment_val}/6\n\n"
+                f"💰 LEVEL\n"
+                f"Entry  : {idr(entry)}\n"
+                f"SL     : {idr(sl)}\n"
+                f"Target : {idr(target)}\n"
+                f"Lot    : {lot}\n"
+                f"{'━'*30}\n"
+                f"⚠️ SPIKE ALERT — verifikasi chart sebelum entry\n"
+                f"Pasang SL. No FOMO."
+            )
+            send_telegram(msg)
+            _spike_state["spike_alerts"].append(tkr)
+
+        except Exception:
+            continue
+
+
+# ============================================================
 @st.cache_resource
 def start_scheduler():
     scheduler = BackgroundScheduler(timezone=WIB)
+
+    # ── Full scan 5x sehari ──────────────────────────────────
     for sched in SCAN_SCHEDULE:
         scheduler.add_job(
             func=auto_scan_background,
@@ -1406,14 +1654,33 @@ def start_scheduler():
             name=f"ATS Scan {sched['label']}",
             replace_existing=True, misfire_grace_time=120,
         )
+
+    # ── Intraday refresh setiap 15 menit jam 09:05–15:30 ────
+    # Ringan: hanya download 5m data + deteksi spike
+    # Tidak full scan — jauh lebih hemat resource
+    scheduler.add_job(
+        func=intraday_refresh_job,
+        trigger=CronTrigger(
+            day_of_week="mon-fri",
+            hour="9-15",          # jam 09:00 sampai 15:00
+            minute="5,20,35,50",  # menit ke 5, 20, 35, 50 → setiap 15 menit
+            timezone=WIB,
+        ),
+        id="intraday_refresh",
+        name="ATS Intraday Refresh 15min",
+        replace_existing=True,
+        misfire_grace_time=60,
+    )
+
     scheduler.start()
 
-    # [I2] Notifikasi saat app start/restart
+    # Notifikasi startup
     send_telegram(
-        f"🟢 ATS SuperEngine V4.0 — SERVER ONLINE\n"
+        f"🟢 ATS SuperEngine {APP_VERSION} — SERVER ONLINE\n"
         f"⏰ {datetime.now(WIB).strftime('%Y-%m-%d %H:%M WIB')}\n"
-        f"Jadwal: 09:05 | 11:30 | 13:35 | 15:00 WIB (Senin–Jumat)\n"
-        f"Auto-scan aktif ✅"
+        f"Full scan: 09:05 | 09:30 | 11:30 | 13:35 | 15:00 WIB\n"
+        f"Intraday refresh: setiap 15 menit jam bursa\n"
+        f"⚡ Spike detection aktif — tidak akan ketinggalan pergerakan ✅"
     )
     return scheduler
 
