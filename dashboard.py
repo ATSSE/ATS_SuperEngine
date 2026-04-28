@@ -51,22 +51,26 @@ ACTIVE_FILE     = "active_trades.csv"
 # ============================================================
 # VERSION HISTORY
 # ============================================================
-APP_VERSION  = "V4.4"
-APP_UPDATED  = "27 Apr 2025"
+APP_VERSION  = "V4.5"
+APP_UPDATED  = "28 Apr 2025"
 
 VERSION_HISTORY = [
     {
-        "versi":   "V4.4",
-        "tanggal": "27 Apr 2025",
-        "tipe":    "Priority Fix",
-        "ringkasan": "P1: Telegram enriched teknikal + P2: Journal auto-fill",
+        "versi":   "V4.5",
+        "tanggal": "28 Apr 2025",
+        "tipe":    "Critical Fix",
+        "ringkasan": "Fix Fatal #1: Inject data intraday hari ini — ATS tidak lagi buta pergerakan",
         "detail": [
-            "[P1] Telegram alert sekarang berisi konteks teknikal: RSI, MACD, Bollinger zone, EMA trend, Volume ratio, Indicator Alignment score",
-            "[P1] Format Telegram lebih terstruktur dengan separator — score 100, level entry, konteks teknikal, footer aksi",
-            "[P1] Alignment bar visual [████░░] 4/6 langsung terlihat di HP tanpa buka dashboard",
-            "[P2] Journal auto-fill: centang BUY → journal otomatis terisi Date, Ticker, Entry, SL, Target, Lot, Sector, Action, RR, Score",
-            "[P2] Kolom Exit & PnL dikosongkan — tinggal diisi saat close posisi",
-            "[P2] Notes otomatis: 'Auto dari ATS V4.4 | 09:30 WIB' sebagai tracking",
+            "Tambah inject_today_intraday() — download 5m data semua ticker sekaligus",
+            "Update baris terakhir daily data dengan OHLCV aktual hari ini sebelum scan",
+            "daily_change_pct() sekarang pakai harga hari ini, bukan closing kemarin",
+            "breakout_confirmation() deteksi breakout yang terjadi hari ini",
+            "bandar_detection() deteksi volume spike hari ini secara real",
+            "Cache 1 menit untuk intraday — balance antara freshness dan performa",
+            "Status update intraday ditampilkan di dashboard: berapa ticker yang diperbarui",
+            "Detail expander: ticker mana saja yang berhasil diupdate dengan harga aktual",
+            "auto_scan_background juga inject intraday — semua scan real-time",
+            "ELSA +6.4% seperti hari ini akan terdeteksi di scan 13:35, bukan hanya jadi penonton",
         ]
     },
     {
@@ -674,6 +678,7 @@ if "dynamic_thresholds" not in st.session_state: st.session_state.dynamic_thresh
 if "last_regime"        not in st.session_state: st.session_state.last_regime        = "-"
 if "debug_log"          not in st.session_state: st.session_state.debug_log          = []
 if "heatmap_data"       not in st.session_state: st.session_state.heatmap_data       = None
+if "intraday_info"      not in st.session_state: st.session_state.intraday_info      = {}
 TOP_N_RESULTS = 5   # Fixed: selalu tampilkan 5 kandidat terbaik siap eksekusi
 
 # ============================================================
@@ -708,18 +713,146 @@ def load_market() -> dict[str, pd.DataFrame]:
             last_close = float(df["Close"].squeeze().iloc[-1])
             if last_close <= 0:                            continue
             if df["Volume"].squeeze().tail(5).mean() <= 0: continue
-
-            # [Fix 8] Volume tier filter: cek likuiditas minimum
-            # Estimasi nilai transaksi harian = harga × volume × 100 (per lot)
-            avg_vol_20   = float(df["Volume"].squeeze().tail(20).mean())
+            avg_vol_20    = float(df["Volume"].squeeze().tail(20).mean())
             est_daily_idr = last_close * avg_vol_20 * 100
             if est_daily_idr < MIN_DAILY_VOLUME_IDR:
-                continue   # Skip saham terlalu sepi
-
+                continue
             market[s] = df
         except Exception:
             continue
     return market
+
+
+# ============================================================
+# INJECT TODAY INTRADAY — Fix Fatal #1
+# Update baris terakhir daily data dengan harga AKTUAL hari ini
+# sehingga semua kalkulasi (RSI, breakout, bandar, change%)
+# menggunakan data real bukan closing kemarin
+# ============================================================
+@st.cache_data(ttl=60)   # cache 1 menit — intraday harus fresh
+def _fetch_today_intraday_raw(tickers_tuple: tuple) -> dict:
+    """
+    Download data intraday hari ini untuk semua ticker sekaligus.
+    Return dict: {ticker_jk: {O, H, L, C, V}} atau {} jika gagal.
+    Menggunakan tuple sebagai argument agar bisa di-cache oleh st.cache_data.
+    """
+    result = {}
+    if not is_trading_day():
+        return result   # Bukan hari bursa, skip
+
+    try:
+        raw = yf.download(
+            tickers=list(tickers_tuple),
+            period="1d",
+            interval="5m",
+            group_by="ticker",
+            progress=False,
+            auto_adjust=True,
+        )
+        if raw is None or raw.empty:
+            return result
+
+        for tkr in tickers_tuple:
+            try:
+                if len(tickers_tuple) == 1:
+                    df5 = raw.dropna()
+                else:
+                    df5 = raw[tkr].dropna()
+
+                if df5 is None or len(df5) < 3:
+                    continue
+
+                close5  = df5["Close"].squeeze()
+                high5   = df5["High"].squeeze()
+                low5    = df5["Low"].squeeze()
+                vol5    = df5["Volume"].squeeze()
+                open5   = df5["Open"].squeeze()
+
+                # Ringkasan OHLCV hari ini
+                result[tkr] = {
+                    "Open":   float(open5.iloc[0]),
+                    "High":   float(high5.max()),
+                    "Low":    float(low5.min()),
+                    "Close":  float(close5.iloc[-1]),
+                    "Volume": float(vol5.sum()),
+                    "n_bars": len(df5),
+                    "last_time": str(close5.index[-1]),
+                }
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    return result
+
+
+def inject_today_intraday(market: dict) -> tuple[dict, dict]:
+    """
+    Update baris terakhir setiap DataFrame di market dengan
+    data intraday aktual hari ini.
+
+    Return:
+        updated_market : dict dengan data terbaru
+        intraday_info  : dict info update per ticker untuk debug
+    """
+    if not is_market_open() and not is_trading_day():
+        return market, {}
+
+    tickers_tuple = tuple(sorted(market.keys()))
+    today_data    = _fetch_today_intraday_raw(tickers_tuple)
+
+    if not today_data:
+        return market, {}
+
+    updated_market = {}
+    intraday_info  = {}
+    today_date     = datetime.now(WIB).date()
+
+    for ticker, df in market.items():
+        if ticker not in today_data:
+            updated_market[ticker] = df
+            continue
+
+        td = today_data[ticker]
+        try:
+            # Cek apakah baris terakhir daily sudah hari ini
+            last_date = pd.to_datetime(df.index[-1]).date()
+
+            new_row = pd.DataFrame({
+                "Open":   [td["Open"]],
+                "High":   [td["High"]],
+                "Low":    [td["Low"]],
+                "Close":  [td["Close"]],
+                "Volume": [td["Volume"]],
+            }, index=[pd.Timestamp(today_date)])
+
+            if last_date == today_date:
+                # Update baris terakhir (hari ini) dengan data intraday terkini
+                df_updated = df.copy()
+                df_updated.iloc[-1] = new_row.iloc[0]
+                intraday_info[ticker] = {
+                    "status":    "updated",
+                    "close":     td["Close"],
+                    "n_bars_5m": td["n_bars"],
+                    "last_time": td["last_time"],
+                }
+            else:
+                # Append baris baru untuk hari ini
+                df_updated = pd.concat([df, new_row])
+                intraday_info[ticker] = {
+                    "status":    "appended",
+                    "close":     td["Close"],
+                    "n_bars_5m": td["n_bars"],
+                    "last_time": td["last_time"],
+                }
+
+            updated_market[ticker] = df_updated
+
+        except Exception:
+            updated_market[ticker] = df
+
+    n_updated = sum(1 for v in intraday_info.values() if v.get("status") in ("updated", "appended"))
+    return updated_market, intraday_info
 
 # ============================================================
 # MARKET HEATMAP — Treemap visual kondisi semua saham ISSI
@@ -1099,6 +1232,17 @@ def run_scanner():
         st.error("Gagal memuat data market. Cek koneksi internet.")
         return
 
+    # ── Inject data intraday hari ini ────────────────────────
+    if is_trading_day():
+        with st.spinner("🔄 Mengupdate harga dengan data intraday hari ini..."):
+            market, intra_info = inject_today_intraday(market)
+        n_upd = sum(1 for v in intra_info.values() if v.get("status") in ("updated","appended"))
+        if n_upd > 0:
+            wib_time = datetime.now(WIB).strftime("%H:%M WIB")
+            st.caption(f"✅ Data diperbarui dengan harga intraday terkini — {n_upd} ticker | {wib_time}")
+        else:
+            st.caption("ℹ️ Data intraday tidak tersedia — menggunakan closing kemarin")
+
     cybernetic_feedback_engine(st.session_state.journal,
                                st.session_state.get("last_regime", "-"))
 
@@ -1112,9 +1256,10 @@ def run_scanner():
     st.session_state.dynamic_thresholds = thresholds
     st.session_state.debug_log          = debug_df.to_dict("records") if not debug_df.empty else []
     st.session_state.scan_result        = scan_df
-    st.session_state.sector_table       = sector_df   # [K7] dari scan_core langsung
+    st.session_state.sector_table       = sector_df
+    st.session_state.intraday_info      = intra_info if is_trading_day() else {}
 
-    # Build heatmap dari seluruh market data (bukan hanya kandidat)
+    # Build heatmap dari market yang sudah diupdate intraday
     st.session_state.heatmap_data = build_heatmap_data(market)
 
     if scan_df.empty:
@@ -1183,9 +1328,13 @@ def auto_scan_background():
             send_telegram("⚠️ ATS AutoScan: Gagal load market data.")
             return
 
+        # ── Inject intraday hari ini ─────────────────────────
+        market, intra_info = inject_today_intraday(market)
+        n_upd = sum(1 for v in intra_info.values() if v.get("status") in ("updated","appended"))
+
         # [F2] Baca balance dari state file, bukan hardcode
-        _state  = load_state()
-        balance = _state.get("balance", 800_000)
+        _state   = load_state()
+        balance  = _state.get("balance", 800_000)
         sig_lock = _state.get("signal_lock", {})
 
         # [B1] scan_core sekarang return 5-tuple termasuk sector_df
@@ -1194,7 +1343,10 @@ def auto_scan_background():
         )
 
         if scan_df.empty:
-            send_telegram(f"📭 ATS AutoScan {now_label}: Tidak ada kandidat hari ini. Regime: {regime}")
+            send_telegram(
+                f"📭 ATS AutoScan {now_label}: Tidak ada kandidat. "
+                f"Regime: {regime} | Intraday: {n_upd} ticker diperbarui"
+            )
             return
 
         # Simpan thresholds ke session state agar entry_system bisa baca
@@ -1586,6 +1738,32 @@ with tabs[1]:
             f"Ready ≥ {th['ready']:.0f}  "
             f"*(dari {th.get('n_samples', 0)} kandidat)*"
         )
+
+    # Status intraday update
+    if st.session_state.intraday_info:
+        n_upd = sum(1 for v in st.session_state.intraday_info.values()
+                    if v.get("status") in ("updated","appended"))
+        wib_now = get_wib_now()
+        if n_upd > 0:
+            st.success(
+                f"⚡ **Intraday aktif** — {n_upd} saham menggunakan harga real hari ini "
+                f"(bukan closing kemarin) | {wib_now}"
+            )
+            with st.expander("📡 Detail update intraday per ticker", expanded=False):
+                intra_df = pd.DataFrame([
+                    {
+                        "Ticker":   k.replace(".JK",""),
+                        "Status":   v.get("status",""),
+                        "Harga Kini": idr(v.get("close", 0)),
+                        "Candle 5m": v.get("n_bars_5m",0),
+                        "Update":   str(v.get("last_time",""))[-8:-3] + " WIB",
+                    }
+                    for k, v in st.session_state.intraday_info.items()
+                    if v.get("status") in ("updated","appended")
+                ]).sort_values("Ticker")
+                st.dataframe(intra_df, use_container_width=True, hide_index=True)
+        else:
+            st.caption("ℹ️ Data intraday tidak tersedia — menggunakan closing kemarin")
 
     if st.session_state.scan_result is not None and not st.session_state.scan_result.empty:
         df = st.session_state.scan_result.copy()
