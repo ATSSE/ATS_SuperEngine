@@ -51,24 +51,25 @@ ACTIVE_FILE     = "active_trades.csv"
 # ============================================================
 # VERSION HISTORY
 # ============================================================
-APP_VERSION  = "V4.6"
+APP_VERSION  = "V4.7"
 APP_UPDATED  = "28 Apr 2025"
 
 VERSION_HISTORY = [
     {
-        "versi":   "V4.6",
+        "versi":   "V4.7",
         "tanggal": "28 Apr 2025",
-        "tipe":    "Critical Fix",
-        "ringkasan": "Intraday refresh 15 menit + spike detection — tidak ketinggalan pergerakan",
+        "tipe":    "UI Redesign",
+        "ringkasan": "Compact one-screen layout — semua info penting tanpa scroll",
         "detail": [
-            "intraday_refresh_job() berjalan setiap 15 menit jam 09:05–15:30 WIB",
-            "Download 5m data semua 98 ticker sekaligus — ringan, bukan full scan",
-            "Spike detection: ticker naik >3% dari open ATAU >2% dari 15 menit lalu + volume >1.5x",
-            "mini_scan_spike(): full scoring pipeline khusus ticker yang spike",
-            "Telegram SPIKE ALERT dengan format kaya: change%, volume ratio, score, level trading",
-            "Signal lock per ticker per hari — tidak spam alert untuk spike yang sama",
-            "ELSA +6.4% seperti kemarin akan terdeteksi di refresh 13:35, bukan jam 13:50",
-            "Total monitoring: 5 full scan + 26 intraday refresh per hari kerja",
+            "Status bar 6 kolom: Bursa, Regime, Balance, Risk, Intraday, Next Scan",
+            "Tombol scan full width langsung di bawah status",
+            "Layout 2 kolom: kiri tabel kandidat + active trades, kanan chart TradingView",
+            "Chart dikompres hide_top_toolbar untuk hemat ruang vertikal",
+            "Summary metrics top kandidat dalam 1 baris 6 kolom",
+            "Heatmap & Sector Radar masuk expander — tidak scroll otomatis",
+            "Debug log masuk expander — tidak scroll otomatis",
+            "Font size compact via CSS — lebih banyak info dalam satu layar",
+            "Dioptimalkan untuk resolusi 1366x768",
         ]
     },
     {
@@ -1979,181 +1980,176 @@ Klik **💾 Save Journal** setelah selesai mengisi.
                 st.markdown(f"- {item}")
 
 # ─────────────────────────────────────────────────────────────
-# TAB 1 — TRADING DESK
+# TAB 1 — TRADING DESK (Compact One-Screen Layout)
 # ─────────────────────────────────────────────────────────────
 with tabs[1]:
-    st.subheader("🔍 Scanner Saham Syariah ISSI")
 
-    b1, b2, b3 = st.columns(3)
-    b1.metric("💰 Balance", f"Rp {idr(st.session_state.balance)}")
-    b2.metric("⚠️ Risk/Trade (2%)", f"Rp {idr(st.session_state.balance * 0.02)}")
-    b3.metric("📊 Regime", st.session_state.get("last_regime", "-"))
-    st.caption("_Ubah balance di tab **💼 Account**_")
-    st.markdown("---")
+    # ── CSS compact global ────────────────────────────────────
+    st.markdown("""
+    <style>
+    /* Kurangi padding default Streamlit */
+    .block-container { padding-top: 0.5rem !important; padding-bottom: 0.5rem !important; }
+    [data-testid="stMetric"] { padding: 6px 10px !important; }
+    [data-testid="stMetricLabel"] { font-size: 11px !important; }
+    [data-testid="stMetricValue"] { font-size: 16px !important; }
+    [data-testid="stMetricDelta"] { font-size: 11px !important; }
+    .stDataFrame { font-size: 12px !important; }
+    h3 { margin-top: 4px !important; margin-bottom: 4px !important; font-size: 14px !important; }
+    </style>
+    """, unsafe_allow_html=True)
 
-    if st.button("🚀 RUN ATS SCANNER V4.0", type="primary", use_container_width=True):
-        with st.spinner("ATS scanning seluruh universe ISSI..."):
+    # ── ROW 1: Status bar kompak ─────────────────────────────
+    market_status = "🟢 BUKA" if is_market_open() else "🔴 TUTUP"
+    intra_n = sum(1 for v in st.session_state.intraday_info.values()
+                  if v.get("status") in ("updated","appended")) if st.session_state.intraday_info else 0
+    regime  = st.session_state.get("last_regime", "-")
+
+    r1c1, r1c2, r1c3, r1c4, r1c5, r1c6 = st.columns(6)
+    r1c1.metric("Bursa", market_status)
+    r1c2.metric("Regime", regime)
+    r1c3.metric("Balance", f"Rp {idr(st.session_state.balance)}")
+    r1c4.metric("Risk/Trade", f"Rp {idr(st.session_state.balance * 0.02)}")
+    r1c5.metric("⚡ Intraday", f"{intra_n} ticker" if intra_n > 0 else "Offline")
+    r1c6.metric("Next Scan", next_scan_label().split(" (")[0])
+
+    # ── ROW 2: Tombol scan ───────────────────────────────────
+    if st.button(f"🚀 RUN ATS SCANNER {APP_VERSION}",
+                 type="primary", use_container_width=True):
+        with st.spinner("Scanning..."):
             run_scanner()
-        st.success("✅ Scan selesai — menampilkan 5 kandidat terbaik siap eksekusi")
 
+    # ── ROW 3: Threshold + intraday status (1 baris) ─────────
+    row3_parts = []
     if st.session_state.dynamic_thresholds:
         th = st.session_state.dynamic_thresholds
-        st.info(
-            f"📊 **Threshold dinamis** — "
-            f"Execute Now ≥ {th['execute_now']:.0f} | "
-            f"Execute ≥ {th['execute']:.0f} | "
-            f"Ready ≥ {th['ready']:.0f}  "
-            f"*(dari {th.get('n_samples', 0)} kandidat)*"
+        row3_parts.append(
+            f"📊 EN≥{th['execute_now']:.0f} | EX≥{th['execute']:.0f} | RD≥{th['ready']:.0f}"
+            f" *({th.get('n_samples',0)} kandidat)*"
         )
+    if intra_n > 0:
+        row3_parts.append(f"⚡ Intraday {intra_n} ticker | {get_wib_now()}")
+    if row3_parts:
+        st.caption("  ·  ".join(row3_parts))
 
-    # Status intraday update
-    if st.session_state.intraday_info:
-        n_upd = sum(1 for v in st.session_state.intraday_info.values()
-                    if v.get("status") in ("updated","appended"))
-        wib_now = get_wib_now()
-        if n_upd > 0:
-            st.success(
-                f"⚡ **Intraday aktif** — {n_upd} saham menggunakan harga real hari ini "
-                f"(bukan closing kemarin) | {wib_now}"
-            )
-            with st.expander("📡 Detail update intraday per ticker", expanded=False):
-                intra_df = pd.DataFrame([
-                    {
-                        "Ticker":   k.replace(".JK",""),
-                        "Status":   v.get("status",""),
-                        "Harga Kini": idr(v.get("close", 0)),
-                        "Candle 5m": v.get("n_bars_5m",0),
-                        "Update":   str(v.get("last_time",""))[-8:-3] + " WIB",
-                    }
-                    for k, v in st.session_state.intraday_info.items()
-                    if v.get("status") in ("updated","appended")
-                ]).sort_values("Ticker")
-                st.dataframe(intra_df, use_container_width=True, hide_index=True)
-        else:
-            st.caption("ℹ️ Data intraday tidak tersedia — menggunakan closing kemarin")
-
+    # ── HASIL SCAN ────────────────────────────────────────────
     if st.session_state.scan_result is not None and not st.session_state.scan_result.empty:
-        df = st.session_state.scan_result.copy()
-
-        # TradingView
-        st.markdown("---")
-        selected = st.selectbox("📈 Pilih saham untuk chart", df["Ticker"].tolist())
-        st.components.v1.html(
-            f'<iframe src="https://s.tradingview.com/widgetembed/?symbol=IDX:{selected}'
-            f'&interval=D&theme=dark&style=1&locale=id" '
-            f'width="100%" height="550" frameborder="0"></iframe>', height=560)
-
-        st.markdown("---")
-        m1, m2, m3, m4, m5 = st.columns(5)
+        df   = st.session_state.scan_result.copy()
         best = df.iloc[0]
-        m1.metric("Top Score",  f"{best['Score']:.1f}")
-        m2.metric("Top RR",     f"{best['RR']:.1f}x")
-        m3.metric("Top Ticker", best["Ticker"])
-        m4.metric("Confluence", f"{best['Confluence']}/6")
-        m5.metric("Change",     f"{best.get('Change%', 0):+.2f}%")   # [I6]
 
-        st.subheader("🏆 Top Runner")
-        cols_show = ["BUY","Action","Ticker","Sector","Score","RR","Change%",
-                     "Confluence","RSI","Breakout","BandarScore","Momentum",
-                     "Accumulation","Entry","SL","Target","Lot","Timing","ATR"]
-        cols_show = [c for c in cols_show if c in df.columns]
+        # ROW 4: Summary metrics top candidate
+        st.markdown("---")
+        sm1, sm2, sm3, sm4, sm5, sm6 = st.columns(6)
+        sm1.metric("🏆 Ticker",    best["Ticker"])
+        sm2.metric("📊 Score",     f"{best['Score']:.1f}")
+        sm3.metric("⚖️ RR",        f"{best['RR']:.1f}x")
+        sm4.metric("🎯 Conf",      f"{best['Confluence']}/6")
+        sm5.metric("📈 Change",    f"{best.get('Change%',0):+.2f}%")
+        sm6.metric("💥 Action",    best.get("Action",""))
 
-        edited = st.data_editor(df[cols_show], use_container_width=True, hide_index=True,
-            column_config={
-                "BUY":          st.column_config.CheckboxColumn("BUY"),
-                "Action":       st.column_config.TextColumn("Action"),
-                "Score":        st.column_config.ProgressColumn("Score", min_value=0, max_value=100, format="%.1f"),
-                "Confluence":   st.column_config.NumberColumn("Conf/6", min_value=0, max_value=6),
-                "BandarScore":  st.column_config.NumberColumn("Bandar", min_value=-4, max_value=4),
-                "Momentum":     st.column_config.NumberColumn("Mom", min_value=0, max_value=2),
-                "Accumulation": st.column_config.NumberColumn("Accum", min_value=0, max_value=3),
-                "Breakout":     st.column_config.TextColumn("Breakout"),
-                "Timing":       st.column_config.TextColumn("Timing"),
-                "RR":           st.column_config.NumberColumn("RR", format="%.1f"),
-                "RSI":          st.column_config.NumberColumn("RSI", format="%.1f"),
-                "Change%":      st.column_config.NumberColumn("Chg%", format="%.2f"),
-                "Lot":          st.column_config.NumberColumn("Lot"),
-                "ATR":          st.column_config.NumberColumn("ATR"),
-            })
+        # ROW 5: Layout 2 kolom — kiri: tabel, kanan: chart
+        col_left, col_right = st.columns([1, 1])
 
-        buy_rows = edited[edited["BUY"] == True]
-        if len(buy_rows) > 0:
-            existing = st.session_state.active_trades["Ticker"].tolist() \
-                if not st.session_state.active_trades.empty else []
-            new_trades = buy_rows[~buy_rows["Ticker"].isin(existing)].copy()
-            if len(new_trades) > 0:
-                new_trades["Status"]    = "OPEN"
-                new_trades["EntryTime"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-                new_trades["ExitPrice"] = None
-                new_trades["ExitDate"]  = None
-                new_trades["PnL"]       = None
-                st.session_state.active_trades = pd.concat(
-                    [st.session_state.active_trades, new_trades], ignore_index=True)
-                st.session_state.active_trades.to_csv(ACTIVE_FILE, index=False)
+        with col_left:
+            st.markdown("**🏆 Top Kandidat**")
+            cols_show = ["BUY","Action","Ticker","Score","RR",
+                         "Change%","Confluence","RSI","Breakout",
+                         "Entry","SL","Target","Lot"]
+            cols_show = [c for c in cols_show if c in df.columns]
 
-                # [P2] AUTO-FILL JOURNAL — pre-filled dari data scan
-                JOURNAL_COLS = ["Date", "Ticker", "Entry", "SL", "Target",
-                                "Lot", "Sector", "Action", "RR", "Score",
-                                "Exit", "PnL", "Notes"]
-                journal_entries = []
-                for _, tr in new_trades.iterrows():
-                    journal_entries.append({
-                        "Date":    datetime.now().strftime("%Y-%m-%d"),
-                        "Ticker":  tr.get("Ticker", "-"),
-                        "Entry":   tr.get("Entry", "-"),
-                        "SL":      tr.get("SL", "-"),
-                        "Target":  tr.get("Target", "-"),
-                        "Lot":     tr.get("Lot", "-"),
-                        "Sector":  tr.get("Sector", "-"),
-                        "Action":  tr.get("Action", "-"),
-                        "RR":      tr.get("RR", "-"),
-                        "Score":   tr.get("Score", "-"),
-                        "Exit":    None,   # diisi saat close posisi
-                        "PnL":     None,   # diisi saat close posisi
-                        "Notes":   f"Auto dari ATS {APP_VERSION} | {datetime.now().strftime('%H:%M WIB')}",
-                    })
+            edited = st.data_editor(
+                df[cols_show],
+                use_container_width=True,
+                hide_index=True,
+                height=220,
+                column_config={
+                    "BUY":       st.column_config.CheckboxColumn("BUY", width="small"),
+                    "Action":    st.column_config.TextColumn("Action", width="medium"),
+                    "Score":     st.column_config.ProgressColumn("Score", min_value=0, max_value=100, format="%.0f"),
+                    "Confluence":st.column_config.NumberColumn("Conf", min_value=0, max_value=6, width="small"),
+                    "Breakout":  st.column_config.TextColumn("BO", width="small"),
+                    "RR":        st.column_config.NumberColumn("RR", format="%.1f", width="small"),
+                    "RSI":       st.column_config.NumberColumn("RSI", format="%.0f", width="small"),
+                    "Change%":   st.column_config.NumberColumn("Chg%", format="%.1f", width="small"),
+                    "Lot":       st.column_config.NumberColumn("Lot", width="small"),
+                })
 
-                if journal_entries:
-                    new_journal = pd.DataFrame(journal_entries)
-                    # Pastikan kolom lengkap
-                    for col in JOURNAL_COLS:
-                        if col not in new_journal.columns:
-                            new_journal[col] = None
-                    if st.session_state.journal.empty:
-                        st.session_state.journal = new_journal[JOURNAL_COLS]
-                    else:
-                        # Tambah kolom baru ke journal lama jika perlu
+            # BUY logic
+            buy_rows = edited[edited["BUY"] == True]
+            if len(buy_rows) > 0:
+                existing    = st.session_state.active_trades["Ticker"].tolist() \
+                    if not st.session_state.active_trades.empty else []
+                new_trades  = buy_rows[~buy_rows["Ticker"].isin(existing)].copy()
+                if len(new_trades) > 0:
+                    new_trades["Status"]    = "OPEN"
+                    new_trades["EntryTime"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+                    new_trades["ExitPrice"] = None
+                    new_trades["ExitDate"]  = None
+                    new_trades["PnL"]       = None
+                    st.session_state.active_trades = pd.concat(
+                        [st.session_state.active_trades, new_trades], ignore_index=True)
+                    st.session_state.active_trades.to_csv(ACTIVE_FILE, index=False)
+
+                    # Journal auto-fill
+                    JOURNAL_COLS = ["Date","Ticker","Entry","SL","Target",
+                                    "Lot","Sector","Action","RR","Score","Exit","PnL","Notes"]
+                    journal_entries = []
+                    for _, tr in new_trades.iterrows():
+                        journal_entries.append({
+                            "Date":   datetime.now().strftime("%Y-%m-%d"),
+                            "Ticker": tr.get("Ticker","-"), "Entry": tr.get("Entry","-"),
+                            "SL":     tr.get("SL","-"),     "Target": tr.get("Target","-"),
+                            "Lot":    tr.get("Lot","-"),     "Sector": tr.get("Sector","-"),
+                            "Action": tr.get("Action","-"), "RR":     tr.get("RR","-"),
+                            "Score":  tr.get("Score","-"),  "Exit":   None, "PnL": None,
+                            "Notes":  f"Auto ATS {APP_VERSION} | {datetime.now().strftime('%H:%M WIB')}",
+                        })
+                    if journal_entries:
+                        new_j = pd.DataFrame(journal_entries)
                         for col in JOURNAL_COLS:
-                            if col not in st.session_state.journal.columns:
-                                st.session_state.journal[col] = None
-                        st.session_state.journal = pd.concat(
-                            [st.session_state.journal, new_journal[JOURNAL_COLS]],
-                            ignore_index=True
-                        )
-                    st.session_state.journal.to_csv(JOURNAL_FILE, index=False)
+                            if col not in new_j.columns: new_j[col] = None
+                        if st.session_state.journal.empty:
+                            st.session_state.journal = new_j[JOURNAL_COLS]
+                        else:
+                            for col in JOURNAL_COLS:
+                                if col not in st.session_state.journal.columns:
+                                    st.session_state.journal[col] = None
+                            st.session_state.journal = pd.concat(
+                                [st.session_state.journal, new_j[JOURNAL_COLS]], ignore_index=True)
+                        st.session_state.journal.to_csv(JOURNAL_FILE, index=False)
+                    st.success(f"✅ {len(new_trades)} trade masuk | Journal terisi otomatis")
+                else:
+                    st.warning("Ticker sudah ada di Active Trades")
 
-                st.success(
-                    f"✅ {len(new_trades)} trade masuk Active Trades  |  "
-                    f"📋 Journal otomatis terisi — lengkapi kolom Exit & PnL setelah close"
-                )
-            else:
-                st.warning("Semua ticker sudah ada di Active Trades")
+            # Active trades compact
+            if not st.session_state.active_trades.empty:
+                st.markdown("**📌 Active Trades**")
+                act_cols = ["Ticker","Entry","SL","Target","Status","PnL"]
+                act_show = [c for c in act_cols if c in st.session_state.active_trades.columns]
+                active_edited = st.data_editor(
+                    st.session_state.active_trades[act_show] if act_show else st.session_state.active_trades,
+                    num_rows="dynamic", use_container_width=True,
+                    hide_index=True, height=150)
+                if st.button("💾 Save", key="save_active"):
+                    st.session_state.active_trades = active_edited.reset_index(drop=True)
+                    st.session_state.active_trades.to_csv(ACTIVE_FILE, index=False)
+                    st.success("✅ Tersimpan")
 
-        if not st.session_state.active_trades.empty:
-            st.markdown("---")
-            st.subheader("📌 Active Trades")
-            active_edited = st.data_editor(
-                st.session_state.active_trades, num_rows="dynamic",
-                use_container_width=True, hide_index=True)
-            if st.button("💾 Save Active Trades"):
-                st.session_state.active_trades = active_edited.reset_index(drop=True)
-                st.session_state.active_trades.to_csv(ACTIVE_FILE, index=False)
-                st.success("✅ Active Trades tersimpan")
+        with col_right:
+            # Chart TradingView compact
+            ticker_opts = df["Ticker"].tolist()
+            selected    = st.selectbox("📈 Chart", ticker_opts, label_visibility="collapsed")
+            st.components.v1.html(
+                f'<iframe src="https://s.tradingview.com/widgetembed/?symbol=IDX:{selected}'
+                f'&interval=D&theme=dark&style=1&locale=id&hide_top_toolbar=1&hide_side_toolbar=1" '
+                f'width="100%" height="370" frameborder="0"></iframe>',
+                height=375
+            )
 
     elif st.session_state.scan_result is not None:
-        st.warning("⚠️ Tidak ada kandidat berkualitas hari ini. Coba saat regime BULLISH.")
+        st.warning("⚠️ Tidak ada kandidat hari ini — market sedang tidak kondusif.")
 
-    # Debug expander
+    # ── SECONDARY (collapse default) ────────────────────────
+    # Debug & Scan detail
     if st.session_state.debug_log:
         debug_df = pd.DataFrame(st.session_state.debug_log)
         gugur_counts = (
@@ -2162,7 +2158,7 @@ with tabs[1]:
         )
         gugur_counts.columns = ["Alasan Gugur", "Jumlah Ticker"]
 
-        with st.expander("🔍 Scan Debug — Kenapa saham tidak lolos?", expanded=False):
+        with st.expander("🔍 Scan Debug", expanded=False):
             st.caption(
                 f"Total: **{len(debug_df)}** | "
                 f"Lolos: **{(debug_df['❌ Gugur di'] == '✅ LOLOS — masuk kandidat').sum()}** | "
@@ -2171,9 +2167,10 @@ with tabs[1]:
             if not gugur_counts.empty:
                 fig_d = px.bar(gugur_counts, x="Jumlah Ticker", y="Alasan Gugur",
                                orientation="h", color="Jumlah Ticker",
-                               color_continuous_scale=["#22c55e","#f59e0b","#ef4444"],
-                               title="Distribusi Alasan Gugur")
-                fig_d.update_layout(height=300, showlegend=False, yaxis=dict(autorange="reversed"))
+                               color_continuous_scale=["#22c55e","#f59e0b","#ef4444"])
+                fig_d.update_layout(height=220, showlegend=False,
+                                    margin=dict(t=10,b=10,l=10,r=10),
+                                    yaxis=dict(autorange="reversed"))
                 st.plotly_chart(fig_d, use_container_width=True)
 
             col_f1, col_f2 = st.columns(2)
@@ -2200,104 +2197,67 @@ with tabs[1]:
                 use_container_width=True, hide_index=True,
                 column_config={c: st.column_config.TextColumn(c) for c in filtered.columns})
 
-    # ── Market Heatmap ───────────────────────────────────────────
-    if st.session_state.heatmap_data is not None and not st.session_state.heatmap_data.empty:
-        st.markdown("---")
-        st.subheader("🌡️ Market Heatmap — Saham Syariah ISSI")
+    # Heatmap + Sector Radar dalam expander
+    has_heatmap = st.session_state.heatmap_data is not None and not st.session_state.heatmap_data.empty
+    has_sector  = st.session_state.sector_table is not None
 
-        hdf = st.session_state.heatmap_data.copy()
+    if has_heatmap or has_sector:
+        with st.expander("🌡️ Market Heatmap & Sector Radar", expanded=False):
+            if has_heatmap:
+                hdf = st.session_state.heatmap_data.copy()
+                n_green  = (hdf["Change%"] > 0).sum()
+                n_red    = (hdf["Change%"] < 0).sum()
+                best_tkr  = hdf.loc[hdf["Change%"].idxmax(), "Ticker"]
+                best_chg  = hdf["Change%"].max()
+                worst_tkr = hdf.loc[hdf["Change%"].idxmin(), "Ticker"]
+                worst_chg = hdf["Change%"].min()
+                avg_chg   = hdf["Change%"].mean()
 
-        # Hitung stats ringkasan
-        n_green  = (hdf["Change%"] > 0).sum()
-        n_red    = (hdf["Change%"] < 0).sum()
-        n_flat   = (hdf["Change%"] == 0).sum()
-        avg_chg  = hdf["Change%"].mean()
-        best_tkr = hdf.loc[hdf["Change%"].idxmax(), "Ticker"]
-        best_chg = hdf["Change%"].max()
-        worst_tkr = hdf.loc[hdf["Change%"].idxmin(), "Ticker"]
-        worst_chg = hdf["Change%"].min()
+                hm1,hm2,hm3,hm4,hm5 = st.columns(5)
+                hm1.metric("Naik",       f"{n_green}")
+                hm2.metric("Turun",      f"{n_red}")
+                hm3.metric("Avg",        f"{avg_chg:+.2f}%")
+                hm4.metric("Top Gainer", best_tkr,  f"{best_chg:+.2f}%")
+                hm5.metric("Top Loser",  worst_tkr, f"{worst_chg:+.2f}%")
 
-        hm1, hm2, hm3, hm4, hm5 = st.columns(5)
-        hm1.metric("Naik", f"{n_green} saham", f"+{avg_chg:.2f}% avg" if avg_chg > 0 else f"{avg_chg:.2f}% avg")
-        hm2.metric("Turun", f"{n_red} saham")
-        hm3.metric("Flat", f"{n_flat} saham")
-        hm4.metric("Top Gainer", best_tkr, f"{best_chg:+.2f}%")
-        hm5.metric("Top Loser", worst_tkr, f"{worst_chg:+.2f}%")
+                fig_heat = px.treemap(
+                    hdf, path=["Sektor","Ticker"], values="Size", color="Change%",
+                    color_continuous_scale=["#7f1d1d","#dc2626","#fca5a5",
+                                            "#f1f5f9","#86efac","#16a34a","#14532d"],
+                    color_continuous_midpoint=0, range_color=[-5,5],
+                    custom_data=["Change%","Sektor"],
+                )
+                fig_heat.update_traces(
+                    texttemplate="<b>%{label}</b><br>%{customdata[0]:+.2f}%",
+                    textfont_size=10,
+                    hovertemplate="<b>%{label}</b><br>%{customdata[1]}<br>%{customdata[0]:+.2f}%<extra></extra>",
+                    marker_line_width=0.5,
+                )
+                fig_heat.update_layout(
+                    height=380, margin=dict(t=5,b=5,l=5,r=5),
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    coloraxis_colorbar=dict(
+                        title="Chg%", tickvals=[-5,-3,-1,0,1,3,5],
+                        ticktext=["-5%","-3%","-1%","0","+1%","+3%","+5%"], len=0.8,
+                    ),
+                )
+                st.plotly_chart(fig_heat, use_container_width=True)
+                st.caption("Ukuran = estimasi nilai transaksi (Rp miliar) | Klik sektor untuk zoom")
 
-        # Treemap
-        fig_heat = px.treemap(
-            hdf,
-            path=["Sektor", "Ticker"],
-            values="Size",
-            color="Change%",
-            color_continuous_scale=[
-                "#7f1d1d",  # merah gelap (-5% ke bawah)
-                "#dc2626",  # merah
-                "#fca5a5",  # merah muda (-1%)
-                "#f1f5f9",  # abu netral (0%)
-                "#86efac",  # hijau muda (+1%)
-                "#16a34a",  # hijau
-                "#14532d",  # hijau gelap (+5% ke atas)
-            ],
-            color_continuous_midpoint=0,
-            range_color=[-5, 5],
-            custom_data=["Change%", "Sektor"],
-            title=None,
-        )
-        fig_heat.update_traces(
-            texttemplate="<b>%{label}</b><br>%{customdata[0]:+.2f}%",
-            textfont_size=11,
-            hovertemplate=(
-                "<b>%{label}</b><br>"
-                "Sektor: %{customdata[1]}<br>"
-                "Change: %{customdata[0]:+.2f}%<br>"
-                "Nilai transaksi: %{value:.2f}M<br>"
-                "<extra></extra>"
-            ),
-            marker_line_width=0.5,
-            marker_line_color="rgba(255,255,255,0.3)",
-        )
-        fig_heat.update_layout(
-            height=500,
-            margin=dict(t=10, b=10, l=10, r=10),
-            coloraxis_showscale=True,
-            coloraxis_colorbar=dict(
-                title="Change%",
-                tickvals=[-5, -3, -1, 0, 1, 3, 5],
-                ticktext=["-5%", "-3%", "-1%", "0%", "+1%", "+3%", "+5%"],
-                len=0.8,
-            ),
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-        )
-        st.plotly_chart(fig_heat, use_container_width=True)
-        st.caption(
-            "Ukuran kotak = estimasi nilai transaksi harian (Rp miliar). "
-            "Warna = % perubahan harga. Klik sektor untuk zoom masuk."
-        )
-
-    # ── Sector Leader Radar ─────────────────────────────────────
-    if st.session_state.sector_table is not None:
-        st.markdown("---")
-        st.subheader("🗺️ Sector Leader Radar")
-        fig = px.bar(
-            st.session_state.sector_table,
-            x="Strength", y="Sector", orientation="h",
-            color="Strength",
-            color_continuous_scale=["#dc2626", "#f59e0b", "#16a34a"],
-            title=None,
-        )
-        fig.update_layout(
-            height=380,
-            showlegend=False,
-            margin=dict(t=10, b=10, l=10, r=10),
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            xaxis=dict(gridcolor="rgba(128,128,128,0.15)"),
-            yaxis=dict(gridcolor="rgba(0,0,0,0)"),
-        )
-        fig.add_vline(x=0, line_width=1, line_color="rgba(128,128,128,0.4)")
-        st.plotly_chart(fig, use_container_width=True)
+            if has_sector:
+                fig_sec = px.bar(
+                    st.session_state.sector_table,
+                    x="Strength", y="Sector", orientation="h", color="Strength",
+                    color_continuous_scale=["#dc2626","#f59e0b","#16a34a"],
+                )
+                fig_sec.add_vline(x=0, line_width=1, line_color="rgba(128,128,128,0.4)")
+                fig_sec.update_layout(
+                    height=300, showlegend=False,
+                    margin=dict(t=5,b=5,l=5,r=5),
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    xaxis=dict(gridcolor="rgba(128,128,128,0.15)"),
+                )
+                st.plotly_chart(fig_sec, use_container_width=True)
 
 # ─────────────────────────────────────────────────────────────
 # TAB 2 — ACCOUNT
