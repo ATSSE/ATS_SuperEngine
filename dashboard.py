@@ -51,24 +51,23 @@ ACTIVE_FILE     = "active_trades.csv"
 # ============================================================
 # VERSION HISTORY
 # ============================================================
-APP_VERSION  = "V4.9"
+APP_VERSION  = "V5.0"
 APP_UPDATED  = "29 Apr 2025"
 
 VERSION_HISTORY = [
     {
-        "versi":   "V4.9",
+        "versi":   "V5.0",
         "tanggal": "29 Apr 2025",
         "tipe":    "Critical Fix",
-        "ringkasan": "Sector hard filter → soft penalty — IMPC +11% dan MEDC +4% tidak akan terlewat lagi",
+        "ringkasan": "Filter ATR% — saham lambat seperti SCCO dan DMAS tidak masuk kandidat lagi",
         "detail": [
-            "Sektor lemah (strength -0.05 s/d 0) tidak lagi langsung dibuang — dapat penalty -5 poin",
-            "Sektor sangat lemah (strength < -0.05) baru di-skip",
-            "Sektor kuat (strength > 0.03) dapat bonus +3 poin",
-            "Sektor positif: 0 adjustment (tidak berubah)",
-            "IMPC Industrial strength=-0.01 → sebelumnya GUGUR, sekarang LANJUT dengan -5 penalty",
-            "MEDC Energy strength=0.0 → sebelumnya GUGUR, sekarang LANJUT dengan -5 penalty",
-            "Debug log menampilkan info adjustment sektor per ticker",
-            "Saham berpotensi di sektor yang baru mulai bergerak tidak lagi terblokir di Filter 1",
+            "Filter 6 ditambahkan: ATR% minimum 1.5% dari harga",
+            "Saham dengan ATR < 1.5% otomatis gugur — terlalu lambat untuk swing trade",
+            "SCCO ATR ~0.5% dari harga → tidak akan masuk kandidat lagi",
+            "DMAS tipe saham yang sama → tidak akan modal stuck lagi",
+            "ATR% ditampilkan di kolom tabel — trader bisa lihat langsung volatilitas saham",
+            "Debug log menampilkan alasan gugur dengan nilai ATR% aktual",
+            "Kandidat yang tersisa adalah saham yang punya karakter bergerak aktif",
         ]
     },
     {
@@ -1179,6 +1178,22 @@ def scan_core(market: dict, balance: float, top_n: int = 5,
                     "❌ Gugur di": f"RR terlalu rendah ({rr:.1f}, min 1.8)"})
                 continue
 
+            # Filter 6: ATR Ratio — skip saham terlalu lambat untuk swing trade
+            # Saham seperti SCCO, DMAS yang ATR < 1.5% dari harga = modal bisa stuck berbulan-bulan
+            # Minimum 1.5% ATR = saham perlu bisa bergerak setidaknya 1.5% per hari
+            atr_pct = (atr / entry * 100) if entry > 0 else 0
+            MIN_ATR_PCT = 1.5   # minimum volatilitas harian untuk swing trade
+            if atr_pct < MIN_ATR_PCT:
+                debug_log.append({"Ticker": tkr_clean, "Sector": sector,
+                    "RSI": round(rsi_value, 1), "EMA_OK": "✅" if ema_ok else "❌",
+                    "Bandar": bandar, "Breakout": breakout,
+                    "Confluence": f"{conf_count}/6", "RR": round(rr, 1), "Score": "-",
+                    "❌ Gugur di": (
+                        f"Volatilitas terlalu rendah (ATR {atr_pct:.2f}% < {MIN_ATR_PCT}%) "
+                        f"— saham terlalu lambat, modal bisa stuck"
+                    )})
+                continue
+
             # Score + [B2] cap yang benar setelah SEMUA bonus
             score  = calculate_score(prob, runner, quality, rr, liq_str, bandar)
             score += momentum * 0.8 + accum * 0.9 + ft * 0.7 + intraday * 0.5
@@ -1206,6 +1221,7 @@ def scan_core(market: dict, balance: float, top_n: int = 5,
                 "PullbackQuality": quality, "Liquidity": liq_str,
                 "RSI": round(rsi_value, 1), "RR": round(rr, 1),
                 "Change%": chg_pct,
+                "ATR%": round(atr_pct, 2),
                 "Momentum": momentum, "Accumulation": accum,
                 "BandarScore": bandar, "Breakout": breakout,
                 "FT": ft, "INTRA": intraday, "Confluence": conf_count,
@@ -2317,7 +2333,7 @@ with tabs[1]:
         with col_left:
             st.markdown("**🏆 Top Kandidat**")
             cols_show = ["BUY","Action","Ticker","Score","RR",
-                         "Change%","Confluence","RSI","Breakout",
+                         "Change%","ATR%","Confluence","RSI","Breakout",
                          "Entry","SL","Target","Lot"]
             cols_show = [c for c in cols_show if c in df.columns]
 
@@ -2335,6 +2351,8 @@ with tabs[1]:
                     "RR":        st.column_config.NumberColumn("RR", format="%.1f", width="small"),
                     "RSI":       st.column_config.NumberColumn("RSI", format="%.0f", width="small"),
                     "Change%":   st.column_config.NumberColumn("Chg%", format="%.1f", width="small"),
+                    "ATR%":      st.column_config.NumberColumn("ATR%", format="%.2f", width="small",
+                                     help="Volatilitas harian (%). Min 1.5% untuk swing trade layak"),
                     "Lot":       st.column_config.NumberColumn("Lot", width="small"),
                 })
 
