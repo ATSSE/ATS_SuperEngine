@@ -51,25 +51,24 @@ ACTIVE_FILE     = "active_trades.csv"
 # ============================================================
 # VERSION HISTORY
 # ============================================================
-APP_VERSION  = "V4.8"
-APP_UPDATED  = "28 Apr 2025"
+APP_VERSION  = "V4.9"
+APP_UPDATED  = "29 Apr 2025"
 
 VERSION_HISTORY = [
     {
-        "versi":   "V4.8",
-        "tanggal": "28 Apr 2025",
-        "tipe":    "UI Premium",
-        "ringkasan": "NOVA Dark + BMW M5 Blue — premium UI final, tidak akan diubah lagi",
+        "versi":   "V4.9",
+        "tanggal": "29 Apr 2025",
+        "tipe":    "Critical Fix",
+        "ringkasan": "Sector hard filter → soft penalty — IMPC +11% dan MEDC +4% tidak akan terlewat lagi",
         "detail": [
-            "Global CSS: Inter font, dark navy #050d1a background",
-            "Header premium: gradient logo, status pills, min score besar",
-            "Metric cards: dark card dengan blue border hover effect",
-            "Tombol scan: BMW M5 blue gradient dengan shadow dan hover animation",
-            "Tabs: glass morphism style dengan active blue accent",
-            "Dataframe, expander, selectbox semua konsisten dark navy theme",
-            "Custom scrollbar biru tipis",
-            "Sembunyikan Streamlit branding",
-            "Dioptimalkan 1366x768 desktop + HP responsive",
+            "Sektor lemah (strength -0.05 s/d 0) tidak lagi langsung dibuang — dapat penalty -5 poin",
+            "Sektor sangat lemah (strength < -0.05) baru di-skip",
+            "Sektor kuat (strength > 0.03) dapat bonus +3 poin",
+            "Sektor positif: 0 adjustment (tidak berubah)",
+            "IMPC Industrial strength=-0.01 → sebelumnya GUGUR, sekarang LANJUT dengan -5 penalty",
+            "MEDC Energy strength=0.0 → sebelumnya GUGUR, sekarang LANJUT dengan -5 penalty",
+            "Debug log menampilkan info adjustment sektor per ticker",
+            "Saham berpotensi di sektor yang baru mulai bergerak tidak lagi terblokir di Filter 1",
         ]
     },
     {
@@ -1053,7 +1052,12 @@ def scan_core(market: dict, balance: float, top_n: int = 5,
         [{"Sector": k, "Strength": round(v, 2)} for k, v in sector_power.items()]
     ).sort_values("Strength", ascending=False)
 
-    positive_sectors = {row["Sector"] for _, row in sector_df.iterrows() if row["Strength"] > 0}
+    # Buat sector strength lookup untuk penalty scoring
+    sector_strength_map = {
+        row["Sector"]: row["Strength"]
+        for _, row in sector_df.iterrows()
+    }
+    positive_sectors = {s for s, v in sector_strength_map.items() if v > 0}
 
     candidates = []
     debug_log  = []
@@ -1072,15 +1076,29 @@ def scan_core(market: dict, balance: float, top_n: int = 5,
             sector    = get_sector(ticker)
             tkr_clean = ticker.replace(".JK", "")
 
-            # Filter 1: Sektor
-            if sector not in positive_sectors:
-                sec_str = next((r["Strength"] for _, r in sector_df.iterrows()
-                                if r["Sector"] == sector), None)
+            # Filter 1: Sektor — SOFT PENALTY (bukan hard filter)
+            # Sektor lemah dapat penalty score, tapi tidak langsung dibuang
+            # Hanya skip jika sektor SANGAT lemah (strength < -0.05)
+            sec_strength = sector_strength_map.get(sector, 0.0)
+            if sec_strength < -0.05:
                 debug_log.append({"Ticker": tkr_clean, "Sector": sector,
                     "RSI": "-", "EMA_OK": "-", "Bandar": "-", "Breakout": "-",
                     "Confluence": "-", "RR": "-", "Score": "-",
-                    "❌ Gugur di": f"Sektor lemah (strength={sec_str})"})
+                    "❌ Gugur di": f"Sektor sangat lemah (strength={sec_strength:.2f} < -0.05)"})
                 continue
+
+            # Hitung sector penalty untuk scoring nanti
+            # Sektor positif: 0 penalty
+            # Sektor netral (0 sampai -0.05): -5 poin
+            # Sektor kuat (>0.03): +3 bonus
+            if sec_strength > 0.03:
+                sector_score_adj = 3.0    # bonus sektor kuat
+            elif sec_strength > 0:
+                sector_score_adj = 0.0    # sektor positif, netral
+            elif sec_strength >= -0.05:
+                sector_score_adj = -5.0   # sektor lemah, penalty ringan
+            else:
+                sector_score_adj = -10.0  # tidak akan sampai sini (sudah di-skip atas)
 
             # Filter 2: RSI — [K1] adaptif per regime
             rsi_ok, rsi_value = rsi_gate(df, regime)
@@ -1167,14 +1185,19 @@ def scan_core(market: dict, balance: float, top_n: int = 5,
             if momentum == 2:               score += 1
             if ft == 2:                     score += 1
             if last_price > ema_val * 1.01: score += 1
+            score += sector_score_adj       # soft sector adjustment
 
             score = min(100.0, score)       # cap setelah semua bonus
+
+            # Info sektor untuk debug
+            sector_note = "✅" if sec_strength > 0 else f"⚠️ adj{sector_score_adj:+.0f}"
 
             debug_log.append({"Ticker": tkr_clean, "Sector": sector,
                 "RSI": round(rsi_value, 1), "EMA_OK": "✅" if ema_ok else "❌",
                 "Bandar": bandar, "Breakout": breakout,
                 "Confluence": f"{conf_count}/6", "RR": round(rr, 1),
-                "Score": round(score, 1), "❌ Gugur di": "✅ LOLOS — masuk kandidat"})
+                "Score": round(score, 1),
+                "❌ Gugur di": f"✅ LOLOS — masuk kandidat ({sector_note} sektor)"})
 
             candidates.append({
                 "BUY": False, "Ticker": tkr_clean, "Sector": sector,
