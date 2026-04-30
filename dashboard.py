@@ -48,6 +48,7 @@ FINNHUB_API_KEY    = os.environ.get("FINNHUB_API_KEY", "")
 TELEGRAM_TOKEN     = os.environ.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT      = os.environ.get("TELEGRAM_CHAT", "")
 ANTHROPIC_API_KEY  = os.environ.get("ANTHROPIC_API_KEY", "")
+GEMINI_API_KEY     = os.environ.get("GEMINI_API_KEY", "")
 STATE_FILE         = "ats_state.json"
 JOURNAL_FILE       = "journal.csv"
 ACTIVE_FILE        = "active_trades.csv"
@@ -112,21 +113,24 @@ _telegram_lock = threading.Lock()
 # ============================================================
 # VERSION HISTORY
 # ============================================================
-APP_VERSION  = "V5.4"
+APP_VERSION  = "V5.5"
 APP_UPDATED  = "30 Apr 2025"
 
 VERSION_HISTORY = [
     {
-        "versi":   "V5.4",
+        "versi":   "V5.5",
         "tanggal": "30 Apr 2025",
-        "tipe":    "UX Polish",
-        "ringkasan": "Deep Analysis premium mode — tampil elegan tanpa error walaupun API key belum di-set",
+        "tipe":    "Feature + Bug Fix",
+        "ringkasan": "Gemini API support (FREE) + Fix balance MixedNumericTypesError",
         "detail": [
-            "Tab Deep Analysis tampilkan info card premium kalau ANTHROPIC_API_KEY belum di-set",
-            "Tombol Jalankan disabled dengan label '🔒 Set API Key dulu' (bukan error 401 lagi)",
-            "Penjelasan jelas: fitur premium opsional, sistem utama tetap jalan normal",
-            "Step setup tampil rapi: daftar → top up → buat key → set Railway → save",
-            "Fitur core ATS (auto-scan, Telegram, heatmap) tidak terpengaruh sama sekali",
+            "Multi-provider AI: Anthropic Claude (premium) + Google Gemini (FREE tier)",
+            "Auto-pilih provider — Anthropic prioritas, fallback ke Gemini",
+            "Gemini 2.0 Flash: gratis, 60 request/menit, kualitas analisis bagus",
+            "Caption Deep Analysis tampilkan provider aktif (🟣 Claude / 🔵 Gemini)",
+            "Setup Gemini di info card — link langsung ke aistudio.google.com/apikey",
+            "Fix MixedNumericTypesError: balance dipaksa int agar konsisten dengan number_input",
+            "Root cause di load_state — balance simpan as int, bukan float",
+            "Cache deep analysis sekarang track provider mana yang dipakai",
         ]
     },
     {
@@ -317,6 +321,108 @@ def send_telegram(message: str, retries: int = 2):
         LOG.error(f"Telegram FAILED setelah {retries+1} percobaan: {message[:80]}...")
         return False
 
+
+# ============================================================
+# AI PROVIDER ABSTRACTION — Anthropic Claude / Google Gemini
+# ============================================================
+def get_ai_provider() -> str:
+    """Return provider yang aktif: 'anthropic', 'gemini', atau 'none'."""
+    if ANTHROPIC_API_KEY: return "anthropic"
+    if GEMINI_API_KEY:    return "gemini"
+    return "none"
+
+def call_ai_anthropic(system_prompt: str, user_prompt: str, max_tokens: int = 2000) -> tuple[bool, str]:
+    """Call Anthropic Claude API. Return (success, text_or_error)."""
+    try:
+        resp = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "Content-Type":      "application/json",
+                "x-api-key":         ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+            },
+            json={
+                "model":      "claude-sonnet-4-20250514",
+                "max_tokens": max_tokens,
+                "system":     system_prompt,
+                "messages":   [{"role": "user", "content": user_prompt}],
+            },
+            timeout=90,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            text = "".join(b["text"] for b in data.get("content", []) if b.get("type") == "text")
+            return True, text
+        else:
+            err = f"Anthropic API error {resp.status_code}: {resp.text[:300]}"
+            LOG.error(err)
+            return False, err
+    except Exception as e:
+        err = f"Anthropic exception: {type(e).__name__}: {str(e)[:200]}"
+        LOG.error(err)
+        return False, err
+
+def call_ai_gemini(system_prompt: str, user_prompt: str, max_tokens: int = 2000) -> tuple[bool, str]:
+    """
+    Call Google Gemini API (free tier: 60 req/min).
+    Return (success, text_or_error).
+    """
+    try:
+        # Gemini menggabungkan system + user dalam satu prompt
+        full_prompt = f"{system_prompt}\n\n---\n\n{user_prompt}"
+
+        url = (
+            f"https://generativelanguage.googleapis.com/v1beta/"
+            f"models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+        )
+        resp = requests.post(
+            url,
+            headers={"Content-Type": "application/json"},
+            json={
+                "contents": [{
+                    "parts": [{"text": full_prompt}]
+                }],
+                "generationConfig": {
+                    "maxOutputTokens": max_tokens,
+                    "temperature":     0.7,
+                }
+            },
+            timeout=90,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            candidates = data.get("candidates", [])
+            if not candidates:
+                return False, "Gemini: tidak ada candidates di response"
+            parts = candidates[0].get("content", {}).get("parts", [])
+            text  = "".join(p.get("text", "") for p in parts)
+            return True, text
+        else:
+            err = f"Gemini API error {resp.status_code}: {resp.text[:300]}"
+            LOG.error(err)
+            return False, err
+    except Exception as e:
+        err = f"Gemini exception: {type(e).__name__}: {str(e)[:200]}"
+        LOG.error(err)
+        return False, err
+
+def call_ai(system_prompt: str, user_prompt: str, max_tokens: int = 2000) -> tuple[bool, str, str]:
+    """
+    Multi-provider AI call. Auto-pilih Anthropic kalau tersedia,
+    fallback ke Gemini, atau return error kalau keduanya kosong.
+    Return (success, text_or_error, provider_used).
+    """
+    provider = get_ai_provider()
+    if provider == "anthropic":
+        ok, text = call_ai_anthropic(system_prompt, user_prompt, max_tokens)
+        return ok, text, "anthropic"
+    elif provider == "gemini":
+        ok, text = call_ai_gemini(system_prompt, user_prompt, max_tokens)
+        return ok, text, "gemini"
+    else:
+        return False, "Tidak ada AI provider yang aktif", "none"
+
+
 # ============================================================
 # PERSISTENSI STATE  [F2][F5][I5]
 # ============================================================
@@ -383,7 +489,7 @@ def load_state() -> dict:
                 data.get("cybernetic_params", DEFAULT_CYBER.copy())
             )
             try:
-                bal = float(data.get("balance", 800_000))
+                bal = int(float(data.get("balance", 800_000)))
                 if bal < 100_000:
                     LOG.warning(f"balance terlalu kecil ({bal}), set ke 800.000")
                     bal = 800_000
@@ -3027,13 +3133,15 @@ with tabs[2]:
     st.subheader("💼 Manajemen Akun")
     col_inp, col_pad = st.columns([2, 3])
     with col_inp:
+        # Cast ke int agar konsisten dengan min_value dan step
+        current_balance = int(st.session_state.balance)
         balance_input = st.number_input("💰 Modal / Balance (Rp)",
-            min_value=100_000, step=100_000, value=st.session_state.balance,
+            min_value=100_000, step=100_000, value=current_balance,
             key="balance_account_input",
             help="Modal trading. Dipakai untuk kalkulasi lot & risk per trade.")
-        if balance_input != st.session_state.balance:
-            st.session_state.balance = balance_input
-            save_state()   # [I5] langsung simpan ke JSON
+        if balance_input != current_balance:
+            st.session_state.balance = int(balance_input)
+            save_state()
             st.success("✅ Balance diperbarui & tersimpan")
             time.sleep(0.4)
             st.rerun()
@@ -3214,22 +3322,28 @@ with tabs[5]:
 
     st.markdown("---")
 
-    # ── Cek API key — tampilkan info elegan kalau belum di-set ─
-    api_key_available = bool(ANTHROPIC_API_KEY)
+    # ── Cek AI provider — Anthropic atau Gemini ──────────────
+    ai_provider = get_ai_provider()
+    api_key_available = ai_provider != "none"
 
     if not api_key_available:
         st.info(
-            "💎 **Deep Analysis adalah fitur premium opsional**\n\n"
-            "Fitur ini menggunakan Claude API berbayar untuk generate analisis "
+            "💎 **Deep Analysis adalah fitur opsional**\n\n"
+            "Fitur ini menggunakan AI untuk generate analisis "
             "Citadel + Bridgewater + Renaissance secara mendalam.\n\n"
             "**Sistem ATS utama tetap berjalan normal tanpa fitur ini** — "
             "auto-scan, Telegram alert, heatmap, dan semua fitur core tidak terpengaruh.\n\n"
-            "Untuk mengaktifkan:\n"
-            "1. Daftar di [console.anthropic.com](https://console.anthropic.com/)\n"
-            "2. Top up credit (sekitar $5 USD = ~300 analisis)\n"
-            "3. Buat API key di tab API Keys\n"
-            "4. Tambahkan ke Railway → Variables → `ANTHROPIC_API_KEY`\n"
-            "5. Save dan tunggu redeploy"
+            "**Pilihan Provider:**\n\n"
+            "🆓 **Google Gemini (GRATIS — Direkomendasikan)**\n"
+            "1. Buka [aistudio.google.com/apikey](https://aistudio.google.com/apikey)\n"
+            "2. Login dengan akun Google → Klik 'Create API Key'\n"
+            "3. Copy API key-nya\n"
+            "4. Buka Railway → Variables → tambah `GEMINI_API_KEY`\n"
+            "5. Save dan tunggu redeploy\n\n"
+            "💰 **Anthropic Claude (BERBAYAR — Premium)**\n"
+            "1. [console.anthropic.com](https://console.anthropic.com/) → buat API key\n"
+            "2. Top up credit (~$5 USD = ~300 analisis)\n"
+            "3. Set `ANTHROPIC_API_KEY` di Railway"
         )
         st.button(
             "🔒 JALANKAN DEEP ANALYSIS (Set API Key dulu)",
@@ -3237,6 +3351,13 @@ with tabs[5]:
         )
         run_analysis = False
     else:
+        # Tampilkan info provider yang aktif
+        provider_label = {
+            "anthropic": "🟣 Claude (Anthropic)",
+            "gemini":    "🔵 Gemini (Google) — FREE tier",
+        }.get(ai_provider, ai_provider)
+        st.caption(f"Provider AI aktif: **{provider_label}**")
+
         run_analysis = st.button(
             "🔬 JALANKAN DEEP ANALYSIS", type="primary", use_container_width=True
         )
@@ -3492,42 +3613,28 @@ ATURAN OUTPUT WAJIB:
 - Akhiri dengan: KESIMPULAN FINAL: [MASUK / TUNDA / HINDARI] + alasan 1-2 kalimat
 - Jika ada konflik ATS vs AI, wajib tampilkan blok konflik seperti instruksi di atas"""
 
-                # ── Panggil Claude API ───────────────────────
-                # Safety check — tombol harusnya sudah disabled, tapi jaga-jaga
-                if not ANTHROPIC_API_KEY:
-                    st.warning("⚠️ API Key tidak tersedia. Set ANTHROPIC_API_KEY di Railway dulu.")
-                    LOG.warning("Deep Analysis dibatalkan: API key kosong")
-                    st.stop()
-
-                response = requests.post(
-                    "https://api.anthropic.com/v1/messages",
-                    headers={
-                        "Content-Type":      "application/json",
-                        "x-api-key":         ANTHROPIC_API_KEY,
-                        "anthropic-version": "2023-06-01",
-                    },
-                    json={
-                        "model": "claude-sonnet-4-20250514",
-                        "max_tokens": max_tok,
-                        "system": (
-                            "Kamu adalah quantitative analyst senior pasar saham Indonesia. "
-                            "Jujur, berbasis data, tidak ada hype, selalu sebut risiko. "
-                            "Jika data tidak cukup untuk kesimpulan valid, katakan tegas."
-                        ),
-                        "messages": [{"role": "user", "content": prompt}]
-                    },
-                    timeout=90
+                # ── Panggil AI provider (Claude/Gemini) ──────
+                system_prompt = (
+                    "Kamu adalah quantitative analyst senior pasar saham Indonesia. "
+                    "Jujur, berbasis data, tidak ada hype, selalu sebut risiko. "
+                    "Jika data tidak cukup untuk kesimpulan valid, katakan tegas."
                 )
 
-                if response.status_code == 200:
-                    data   = response.json()
-                    result = "".join(
-                        b["text"] for b in data.get("content", []) if b.get("type") == "text"
-                    )
+                ok, result, provider_used = call_ai(
+                    system_prompt=system_prompt,
+                    user_prompt=prompt,
+                    max_tokens=max_tok,
+                )
 
+                if ok:
                     # ── Tampilkan hasil ──────────────────────
+                    provider_emoji = "🟣" if provider_used == "anthropic" else "🔵"
                     st.markdown(f"### 🔬 {focus_label} — {ticker_input}")
-                    st.caption(f"Dianalisis: {datetime.now(WIB).strftime('%d %b %Y %H:%M WIB')}  |  {data_label}  |  {n_bars} hari data")
+                    st.caption(
+                        f"Dianalisis: {datetime.now(WIB).strftime('%d %b %Y %H:%M WIB')}  |  "
+                        f"{data_label}  |  {n_bars} hari data  |  "
+                        f"AI: {provider_emoji} {provider_used.title()}"
+                    )
 
                     # [C6] Deteksi konflik otomatis dari output AI
                     if "KONFLIK SIGNAL" in result or "konflik" in result.lower():
@@ -3563,10 +3670,11 @@ ATURAN OUTPUT WAJIB:
                         "type":       focus_label,
                         "data_date":  data_date,
                         "n_bars":     n_bars,
+                        "provider":   provider_used,
                     }
 
                 else:
-                    st.error(f"API error {response.status_code}: {response.text[:300]}")
+                    st.error(f"❌ AI error: {result}")
 
             except Exception as e:
                 st.error(f"Error analisis {ticker_input}: {str(e)}")
