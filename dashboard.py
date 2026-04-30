@@ -44,13 +44,14 @@ from apscheduler.triggers.cron import CronTrigger
 # ============================================================
 # KONFIGURASI
 # ============================================================
-FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "")
-TELEGRAM_TOKEN  = os.environ.get("TELEGRAM_TOKEN", "")
-TELEGRAM_CHAT   = os.environ.get("TELEGRAM_CHAT", "")
-STATE_FILE      = "ats_state.json"
-JOURNAL_FILE    = "journal.csv"
-ACTIVE_FILE     = "active_trades.csv"
-LOG_FILE        = "ats.log"
+FINNHUB_API_KEY    = os.environ.get("FINNHUB_API_KEY", "")
+TELEGRAM_TOKEN     = os.environ.get("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT      = os.environ.get("TELEGRAM_CHAT", "")
+ANTHROPIC_API_KEY  = os.environ.get("ANTHROPIC_API_KEY", "")
+STATE_FILE         = "ats_state.json"
+JOURNAL_FILE       = "journal.csv"
+ACTIVE_FILE        = "active_trades.csv"
+LOG_FILE           = "ats.log"
 
 # ============================================================
 # [Task 1] STRUCTURED LOGGING — ats.log
@@ -111,25 +112,21 @@ _telegram_lock = threading.Lock()
 # ============================================================
 # VERSION HISTORY
 # ============================================================
-APP_VERSION  = "V5.2"
+APP_VERSION  = "V5.4"
 APP_UPDATED  = "30 Apr 2025"
 
 VERSION_HISTORY = [
     {
-        "versi":   "V5.2",
+        "versi":   "V5.4",
         "tanggal": "30 Apr 2025",
-        "tipe":    "Stabilization & Visibility",
-        "ringkasan": "7 task hardening — logic trading TIDAK diubah, hanya stabilitas dan observability",
+        "tipe":    "UX Polish",
+        "ringkasan": "Deep Analysis premium mode — tampil elegan tanpa error walaupun API key belum di-set",
         "detail": [
-            "[T1] Structured logging ke ats.log: timestamp, ticker, score, regime, RR, conf, alasan",
-            "[T2] Score Breakdown explainability — expander baru menjelaskan setiap komponen score per kandidat",
-            "[T3] Thread safety: threading.Lock untuk _spike_state, _state, telegram",
-            "[T4] Atomic JSON save: temp file → flush → fsync → os.replace (anti-corrupt)",
-            "[T5] Telegram tidak silent fail — retry 2x, log warning, status response",
-            "[T6] Batch yfinance download 30 ticker per batch + retry — fix missing TKIM/INKP",
-            "[T7] Config validation — clamp param ke range valid, fallback default jika corrupt",
-            "Logic trading, scoring formula, filtering: TIDAK diubah sama sekali",
-            "Tujuan: scan consistency, debugging clarity, reliability",
+            "Tab Deep Analysis tampilkan info card premium kalau ANTHROPIC_API_KEY belum di-set",
+            "Tombol Jalankan disabled dengan label '🔒 Set API Key dulu' (bukan error 401 lagi)",
+            "Penjelasan jelas: fitur premium opsional, sistem utama tetap jalan normal",
+            "Step setup tampil rapi: daftar → top up → buat key → set Railway → save",
+            "Fitur core ATS (auto-scan, Telegram, heatmap) tidak terpengaruh sama sekali",
         ]
     },
     {
@@ -1543,19 +1540,37 @@ def scan_core(market: dict, balance: float, top_n: int = 5,
                     "❌ Gugur di": f"RR terlalu rendah ({rr:.1f}, min 1.8)"})
                 continue
 
-            # Filter 6: ATR Ratio — skip saham terlalu lambat untuk swing trade
-            # Saham seperti SCCO, DMAS yang ATR < 1.5% dari harga = modal bisa stuck berbulan-bulan
-            # Minimum 1.5% ATR = saham perlu bisa bergerak setidaknya 1.5% per hari
-            atr_pct = (atr / entry * 100) if entry > 0 else 0
-            MIN_ATR_PCT = 1.5   # minimum volatilitas harian untuk swing trade
+            # Filter 6: Slow Mover Detection — perketat untuk saham seperti SCCO, DMAS
+            # Multi-criteria: ATR% + average daily move + range konsistensi
+            atr_pct      = (atr / entry * 100) if entry > 0 else 0
+
+            # Hitung average daily move 20 hari (dari closing changes)
+            close_series = df["Close"].squeeze()
+            daily_changes = close_series.pct_change().tail(20).abs() * 100
+            avg_daily_move = float(daily_changes.mean())   # rata-rata % gerakan harian
+            days_active   = int((daily_changes > 1.0).sum())  # berapa hari yang gerak >1%
+
+            # Threshold yang lebih ketat
+            MIN_ATR_PCT       = 2.0   # naik dari 1.5 → 2.0 (SCCO 2.54% akan lolos tapi DMAS gugur)
+            MIN_AVG_DAILY     = 1.2   # rata-rata harus bergerak min 1.2% per hari
+            MIN_ACTIVE_DAYS   = 8     # minimal 8 dari 20 hari harus bergerak >1%
+
+            slow_mover_reasons = []
             if atr_pct < MIN_ATR_PCT:
+                slow_mover_reasons.append(f"ATR {atr_pct:.2f}% < {MIN_ATR_PCT}%")
+            if avg_daily_move < MIN_AVG_DAILY:
+                slow_mover_reasons.append(f"avg daily {avg_daily_move:.2f}% < {MIN_AVG_DAILY}%")
+            if days_active < MIN_ACTIVE_DAYS:
+                slow_mover_reasons.append(f"hanya {days_active}/20 hari aktif")
+
+            if slow_mover_reasons:
                 debug_log.append({"Ticker": tkr_clean, "Sector": sector,
                     "RSI": round(rsi_value, 1), "EMA_OK": "✅" if ema_ok else "❌",
                     "Bandar": bandar, "Breakout": breakout,
                     "Confluence": f"{conf_count}/6", "RR": round(rr, 1), "Score": "-",
                     "❌ Gugur di": (
-                        f"Volatilitas terlalu rendah (ATR {atr_pct:.2f}% < {MIN_ATR_PCT}%) "
-                        f"— saham terlalu lambat, modal bisa stuck"
+                        f"Saham slow mover ({', '.join(slow_mover_reasons)}) "
+                        f"— modal bisa stuck"
                     )})
                 continue
 
@@ -3013,9 +3028,7 @@ with tabs[2]:
     col_inp, col_pad = st.columns([2, 3])
     with col_inp:
         balance_input = st.number_input("💰 Modal / Balance (Rp)",
-            min_value=0,
-            value=int(st.session_state.balance),
-            step=100000,
+            min_value=100_000, step=100_000, value=st.session_state.balance,
             key="balance_account_input",
             help="Modal trading. Dipakai untuk kalkulasi lot & risk per trade.")
         if balance_input != st.session_state.balance:
@@ -3201,9 +3214,32 @@ with tabs[5]:
 
     st.markdown("---")
 
-    run_analysis = st.button(
-        "🔬 JALANKAN DEEP ANALYSIS", type="primary", use_container_width=True
-    )
+    # ── Cek API key — tampilkan info elegan kalau belum di-set ─
+    api_key_available = bool(ANTHROPIC_API_KEY)
+
+    if not api_key_available:
+        st.info(
+            "💎 **Deep Analysis adalah fitur premium opsional**\n\n"
+            "Fitur ini menggunakan Claude API berbayar untuk generate analisis "
+            "Citadel + Bridgewater + Renaissance secara mendalam.\n\n"
+            "**Sistem ATS utama tetap berjalan normal tanpa fitur ini** — "
+            "auto-scan, Telegram alert, heatmap, dan semua fitur core tidak terpengaruh.\n\n"
+            "Untuk mengaktifkan:\n"
+            "1. Daftar di [console.anthropic.com](https://console.anthropic.com/)\n"
+            "2. Top up credit (sekitar $5 USD = ~300 analisis)\n"
+            "3. Buat API key di tab API Keys\n"
+            "4. Tambahkan ke Railway → Variables → `ANTHROPIC_API_KEY`\n"
+            "5. Save dan tunggu redeploy"
+        )
+        st.button(
+            "🔒 JALANKAN DEEP ANALYSIS (Set API Key dulu)",
+            type="secondary", use_container_width=True, disabled=True
+        )
+        run_analysis = False
+    else:
+        run_analysis = st.button(
+            "🔬 JALANKAN DEEP ANALYSIS", type="primary", use_container_width=True
+        )
 
     if run_analysis:
         with st.spinner(f"Mengambil data dan menganalisis {ticker_input}..."):
@@ -3457,12 +3493,22 @@ ATURAN OUTPUT WAJIB:
 - Jika ada konflik ATS vs AI, wajib tampilkan blok konflik seperti instruksi di atas"""
 
                 # ── Panggil Claude API ───────────────────────
+                # Safety check — tombol harusnya sudah disabled, tapi jaga-jaga
+                if not ANTHROPIC_API_KEY:
+                    st.warning("⚠️ API Key tidak tersedia. Set ANTHROPIC_API_KEY di Railway dulu.")
+                    LOG.warning("Deep Analysis dibatalkan: API key kosong")
+                    st.stop()
+
                 response = requests.post(
                     "https://api.anthropic.com/v1/messages",
-                    headers={"Content-Type": "application/json"},
+                    headers={
+                        "Content-Type":      "application/json",
+                        "x-api-key":         ANTHROPIC_API_KEY,
+                        "anthropic-version": "2023-06-01",
+                    },
                     json={
                         "model": "claude-sonnet-4-20250514",
-                        "max_tokens": max_tok,   # [C3] adaptif per tipe
+                        "max_tokens": max_tok,
                         "system": (
                             "Kamu adalah quantitative analyst senior pasar saham Indonesia. "
                             "Jujur, berbasis data, tidak ada hype, selalu sebut risiko. "
