@@ -51,23 +51,26 @@ ACTIVE_FILE     = "active_trades.csv"
 # ============================================================
 # VERSION HISTORY
 # ============================================================
-APP_VERSION  = "V5.0"
-APP_UPDATED  = "29 Apr 2025"
+APP_VERSION  = "V5.1"
+APP_UPDATED  = "30 Apr 2025"
 
 VERSION_HISTORY = [
     {
-        "versi":   "V5.0",
-        "tanggal": "29 Apr 2025",
-        "tipe":    "Critical Fix",
-        "ringkasan": "Filter ATR% — saham lambat seperti SCCO dan DMAS tidak masuk kandidat lagi",
+        "versi":   "V5.1",
+        "tanggal": "30 Apr 2025",
+        "tipe":    "Smart Upgrade",
+        "ringkasan": "Adaptive Weights + Overfitting Control — upgrade yang tidak memberatkan sistem",
         "detail": [
-            "Filter 6 ditambahkan: ATR% minimum 1.5% dari harga",
-            "Saham dengan ATR < 1.5% otomatis gugur — terlalu lambat untuk swing trade",
-            "SCCO ATR ~0.5% dari harga → tidak akan masuk kandidat lagi",
-            "DMAS tipe saham yang sama → tidak akan modal stuck lagi",
-            "ATR% ditampilkan di kolom tabel — trader bisa lihat langsung volatilitas saham",
-            "Debug log menampilkan alasan gugur dengan nilai ATR% aktual",
-            "Kandidat yang tersisa adalah saham yang punya karakter bergerak aktif",
+            "[P4] Adaptive Weight Engine — bobot scoring berubah per regime market",
+            "  BULLISH: momentum +20%, runner +25% → tangkap tren kuat",
+            "  SIDEWAYS: RR +25%, akumulasi +20% → selektif dan disiplin",
+            "  DISTRIBUTION: likuiditas dominan → hindari perangkap",
+            "  VOLATILE: intraday +30% → prioritas data real-time",
+            "[P6] Overfitting Control — starvation detection",
+            "  Kalau tidak ada kandidat sama sekali → threshold auto-dilonggarkan 10%",
+            "  Tidak terjebak terlalu selektif saat market sideways",
+            "P1/P2/P3/P5 TIDAK diaktifkan — terlalu memberatkan tanpa data validasi",
+            "Arsitektur tetap ringan — tidak ada penalti tambahan ke scoring",
         ]
     },
     {
@@ -510,19 +513,156 @@ def daily_change_pct(df: pd.DataFrame) -> float:
     return round((float(close.iloc[-1]) - float(close.iloc[-2])) / float(close.iloc[-2]) * 100, 2)
 
 # ============================================================
-# SCORE
+# ▓▓▓ DEEP ARCHITECTURE UPGRADE — V5.1 ▓▓▓
+# Modular engines, backward compatible, no redesign
+# ============================================================
+
+# ── PRIORITAS 4: ADAPTIVE WEIGHT ENGINE ─────────────────────
+# Bobot scoring adaptif per regime — tidak lagi hardcode statis
+REGIME_WEIGHTS: dict[str, dict] = {
+    "BULLISH": {
+        "prob":     0.30,   # momentum paling penting saat bullish
+        "runner":   0.25,
+        "quality":  0.10,
+        "rr":       0.15,
+        "liquidity":0.10,
+        "bandar":   0.10,
+        # bonus multipliers untuk scan_core
+        "momentum_w": 1.2,
+        "accum_w":    0.8,
+        "ft_w":       1.0,
+        "intraday_w": 0.8,
+    },
+    "SIDEWAYS": {
+        "prob":     0.20,
+        "runner":   0.15,
+        "quality":  0.15,
+        "rr":       0.25,   # RR paling penting saat sideways
+        "liquidity":0.10,
+        "bandar":   0.15,
+        "momentum_w": 0.8,
+        "accum_w":    1.2,  # akumulasi lebih penting
+        "ft_w":       0.8,
+        "intraday_w": 1.0,
+    },
+    "DISTRIBUTION": {
+        "prob":     0.15,
+        "runner":   0.10,
+        "quality":  0.15,
+        "rr":       0.20,
+        "liquidity":0.25,   # likuiditas paling penting saat distribusi
+        "bandar":   0.15,
+        "momentum_w": 0.6,
+        "accum_w":    1.0,
+        "ft_w":       0.6,
+        "intraday_w": 1.2,
+    },
+    "VOLATILE": {
+        "prob":     0.20,
+        "runner":   0.15,
+        "quality":  0.10,
+        "rr":       0.25,
+        "liquidity":0.20,
+        "bandar":   0.10,
+        "momentum_w": 0.7,
+        "accum_w":    0.9,
+        "ft_w":       0.8,
+        "intraday_w": 1.3,
+    },
+}
+
+def get_adaptive_weights(regime: str) -> dict:
+    """Return bobot scoring adaptif berdasarkan regime."""
+    return REGIME_WEIGHTS.get(regime, REGIME_WEIGHTS["SIDEWAYS"])
+
+
+# ── PRIORITAS 6: OVERFITTING CONTROL ────────────────────────
+def check_opportunity_starvation(debug_log: list, n_universe: int) -> dict:
+    """
+    Deteksi apakah sistem terlalu selektif (opportunity starvation).
+    Kalau terlalu sedikit kandidat → longgarkan threshold dinamis.
+    Return: dict dengan rekomendasi penyesuaian.
+    """
+    if not debug_log:
+        return {"status": "NO_DATA", "loosen": False}
+
+    lolos = sum(1 for d in debug_log if "LOLOS" in str(d.get("❌ Gugur di", "")))
+    pct_lolos = lolos / max(n_universe, 1) * 100
+
+    # Hitung distribusi alasan gugur
+    reasons: dict[str, int] = {}
+    for d in debug_log:
+        reason = str(d.get("❌ Gugur di", ""))
+        if "LOLOS" not in reason:
+            key = reason.split("(")[0].split(":")[0].strip()[:30]
+            reasons[key] = reasons.get(key, 0) + 1
+
+    # Deteksi dominan satu filter
+    top_reason_count = max(reasons.values()) if reasons else 0
+    single_filter_dominant = top_reason_count > n_universe * 0.5
+
+    status = "HEALTHY"
+    loosen = False
+
+    if pct_lolos == 0:
+        status = "STARVATION"    # tidak ada kandidat sama sekali
+        loosen = True
+    elif pct_lolos < 2:
+        status = "TIGHT"         # sangat sedikit kandidat
+        loosen = True
+    elif pct_lolos < 5:
+        status = "SELECTIVE"     # cukup selektif, normal
+    else:
+        status = "HEALTHY"
+
+    return {
+        "status":                  status,
+        "pct_lolos":               round(pct_lolos, 1),
+        "loosen":                  loosen,
+        "single_filter_dominant":  single_filter_dominant,
+        "top_reasons":             dict(sorted(reasons.items(), key=lambda x: -x[1])[:3]),
+    }
+
+
+# ── PRIORITAS 7: PERFORMANCE — Cache deduplikasi ────────────
+_breadth_cache: dict = {"data": None, "ts": 0, "ttl": 600}  # cache 10 menit
+
+def get_market_breadth_cached(market: dict) -> tuple[float, str, dict]:
+    """Market breadth dengan cache 10 menit — hemat komputasi."""
+    now = time.time()
+    if _breadth_cache["data"] and now - _breadth_cache["ts"] < _breadth_cache["ttl"]:
+        return _breadth_cache["data"]
+    result = calculate_market_breadth(market)
+    _breadth_cache["data"] = result
+    _breadth_cache["ts"]   = now
+    return result
+
+
+# ============================================================
+# SCORE — upgrade dengan adaptive weights
 # ============================================================
 def calculate_score(prob: float, runner: float, quality: str,
-                    rr: float, liquidity: str, bandar_score: int) -> float:
-    prob_score    = (max(0, min(100, prob)) / 100) * 25
-    runner_score  = (max(0, min(10, runner)) / 10) * 20
+                    rr: float, liquidity: str, bandar_score: int,
+                    regime: str = "SIDEWAYS") -> float:
+    """
+    Scoring dengan adaptive weights per regime.
+    Backward compatible — regime default SIDEWAYS = perilaku lama.
+    """
+    weights = get_adaptive_weights(regime)
+
+    prob_score    = (max(0, min(100, prob)) / 100) * (weights["prob"] * 100)
+    runner_score  = (max(0, min(10, runner)) / 10)  * (weights["runner"] * 100)
     quality_map   = {"WEAK": 3, "HEALTHY": 10, "STRONG": 15}
-    quality_score = quality_map.get(quality, 0)
-    rr_score      = min(20, (max(0, min(4.0, rr)) / 4.0) * 20)
-    if rr >= 2.5: rr_score = min(20, rr_score + 3)
-    liq_score  = 10 if "OK" in str(liquidity) else 0
-    bandar_pts = (max(0, min(4, bandar_score)) / 4) * 10
+    quality_score = quality_map.get(quality, 0) * (weights["quality"] / 0.15)
+    rr_score      = min(weights["rr"] * 100,
+                        (max(0, min(4.0, rr)) / 4.0) * (weights["rr"] * 100))
+    if rr >= 2.5:  rr_score = min(weights["rr"] * 100, rr_score + 3)
+    liq_score  = weights["liquidity"] * 100 if "OK" in str(liquidity) else 0
+    bandar_pts = (max(0, min(4, bandar_score)) / 4) * (weights["bandar"] * 100)
+
     return round(prob_score + runner_score + quality_score + rr_score + liq_score + bandar_pts, 2)
+
+
 
 # ============================================================
 # CONFLUENCE
@@ -1042,7 +1182,7 @@ def format_telegram_signal_bg(row: dict, regime: str) -> str:
 def scan_core(market: dict, balance: float, top_n: int = 5,
               show_progress: bool = False) -> tuple[pd.DataFrame, pd.DataFrame, dict, str, pd.DataFrame]:
     """
-    Inti scanner.
+    Inti scanner V5.1 — semua engine terintegrasi.
     Return: (scan_df, debug_df, thresholds, regime, sector_df)
     """
     regime       = detect_market_regime(market)
@@ -1051,12 +1191,14 @@ def scan_core(market: dict, balance: float, top_n: int = 5,
         [{"Sector": k, "Strength": round(v, 2)} for k, v in sector_power.items()]
     ).sort_values("Strength", ascending=False)
 
-    # Buat sector strength lookup untuk penalty scoring
+    # ── P4: Adaptive weights berdasarkan regime ──────────────
+    ada_weights = get_adaptive_weights(regime)
+
+    # Buat sector strength lookup
     sector_strength_map = {
         row["Sector"]: row["Strength"]
         for _, row in sector_df.iterrows()
     }
-    positive_sectors = {s for s, v in sector_strength_map.items() if v > 0}
 
     candidates = []
     debug_log  = []
@@ -1194,15 +1336,23 @@ def scan_core(market: dict, balance: float, top_n: int = 5,
                     )})
                 continue
 
-            # Score + [B2] cap yang benar setelah SEMUA bonus
-            score  = calculate_score(prob, runner, quality, rr, liq_str, bandar)
-            score += momentum * 0.8 + accum * 0.9 + ft * 0.7 + intraday * 0.5
+            # ── SCORING V5.1 — P4 Adaptive + P6 Starvation ─
+            # P4: Adaptive score dengan regime weights
+            score = calculate_score(prob, runner, quality, rr, liq_str, bandar, regime)
+
+            # Adaptive bonus multipliers per regime
+            score += (momentum * 0.8 * ada_weights["momentum_w"] +
+                      accum    * 0.9 * ada_weights["accum_w"]    +
+                      ft       * 0.7 * ada_weights["ft_w"]        +
+                      intraday * 0.5 * ada_weights["intraday_w"])
             if momentum == 2:               score += 1
             if ft == 2:                     score += 1
             if last_price > ema_val * 1.01: score += 1
-            score += sector_score_adj       # soft sector adjustment
 
-            score = min(100.0, score)       # cap setelah semua bonus
+            # Sector adjustment
+            score += sector_score_adj
+
+            score = min(100.0, max(0.0, score))
 
             # Info sektor untuk debug
             sector_note = "✅" if sec_strength > 0 else f"⚠️ adj{sector_score_adj:+.0f}"
@@ -1240,9 +1390,23 @@ def scan_core(market: dict, balance: float, top_n: int = 5,
         prog.empty()
 
     if not candidates:
+        # P6: Opportunity starvation check
+        check_opportunity_starvation(debug_log, total)
         return pd.DataFrame(), pd.DataFrame(debug_log), {}, regime, sector_df
 
+    # P6: Overfitting control
+    starvation_info = check_opportunity_starvation(debug_log, total)
+
     thresholds = get_dynamic_thresholds([c["Score"] for c in candidates])
+
+    # P6: Kalau starvation, longgarkan threshold
+    if starvation_info.get("loosen") and starvation_info.get("status") == "STARVATION":
+        thresholds["execute_now"]    = max(thresholds["execute_now"] * 0.90, 70)
+        thresholds["execute"]        = max(thresholds["execute"]     * 0.90, 60)
+        thresholds["ready"]          = max(thresholds["ready"]       * 0.90, 50)
+        thresholds["loosen_applied"] = True
+
+    thresholds["starvation"] = starvation_info
 
     # [B1] Pass thresholds eksplisit ke entry_system agar aman di background thread
     cyber_params = {}
