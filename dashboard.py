@@ -3013,7 +3013,9 @@ with tabs[2]:
     col_inp, col_pad = st.columns([2, 3])
     with col_inp:
         balance_input = st.number_input("💰 Modal / Balance (Rp)",
-            min_value=0, value=800000, step=100000, value=int(st.session_state.balance),
+            min_value=0,
+            value=int(st.session_state.balance),
+            step=100000,
             key="balance_account_input",
             help="Modal trading. Dipakai untuk kalkulasi lot & risk per trade.")
         if balance_input != st.session_state.balance:
