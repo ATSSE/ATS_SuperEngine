@@ -6,7 +6,6 @@
     "last_adjust_date": null,
     "adjustment_history": []
   },
-  "signal_lock": {
-    "DMAS": 1776839385.1415398
-  }
+  "signal_lock": {},
+  "balance": 2000000
 }

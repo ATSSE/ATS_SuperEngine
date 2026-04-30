@@ -11,7 +11,7 @@ def liquidity_trap(df):
     prev = close.iloc[-2]
 
     last_low = low.iloc[-1]
-    low5 = low.tail(5).min()
+    low5 = low.iloc[:-1].tail(5).min()
 
     avg_vol = vol.tail(20).mean()
     last_vol = vol.iloc[-1]
@@ -65,7 +65,8 @@ def runner_probability(df):
 
     # breakout pressure
 
-    if last > high.tail(20).max():
+    prior_high20 = high.iloc[:-1].tail(20).max()
+    if last >= prior_high20:
         prob += 20
 
     # liquidity trap filter

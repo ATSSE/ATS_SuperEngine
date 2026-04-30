@@ -693,11 +693,13 @@ def momentum_confirmation(df: pd.DataFrame) -> int:
     volume     = df["Volume"].squeeze()
     vwap       = rolling_vwap(df, 20)
     last_price = float(close.iloc[-1])
+    prev_price = float(close.iloc[-2])
     last_vwap  = float(vwap.iloc[-1]) if not np.isnan(vwap.iloc[-1]) else last_price
     avg_vol    = float(volume.tail(20).mean())
+    change_pct = (last_price - prev_price) / prev_price * 100 if prev_price > 0 else 0
     score = 0
-    if float(volume.iloc[-1]) > avg_vol * 1.5: score += 1
-    if last_price > last_vwap:                  score += 1
+    if change_pct > 0.8 and float(volume.iloc[-1]) > avg_vol * 1.2: score += 1
+    if last_price > last_vwap and change_pct > 0:                   score += 1
     return score
 
 def accumulation_phase(df: pd.DataFrame) -> int:
@@ -732,14 +734,19 @@ def bandar_detection(df: pd.DataFrame) -> int:
 
 def breakout_confirmation(df: pd.DataFrame) -> str:
     close       = df["Close"].squeeze()
+    high        = df["High"].squeeze()
     volume      = df["Volume"].squeeze()
     last        = float(close.iloc[-1])
-    recent_high = float(close.tail(10).max())
+    prev        = float(close.iloc[-2])
+    recent_high = float(high.iloc[:-1].tail(10).max())
     avg_vol     = float(volume.tail(20).mean())
-    breakout    = last >= recent_high * 0.98
-    if breakout and float(volume.iloc[-1]) > avg_vol * 1.3:
+    vol_ratio   = float(volume.iloc[-1]) / avg_vol if avg_vol > 0 else 1.0
+    change_pct  = (last - prev) / prev * 100 if prev > 0 else 0
+    breakout    = last >= recent_high
+    near_breakout = last >= recent_high * 0.99 and change_pct > 0
+    if breakout and vol_ratio > 1.3:
         return "VALID"
-    if breakout:
+    if near_breakout and vol_ratio >= 0.8:
         return "WEAK"
     return "WAIT"
 
@@ -759,16 +766,23 @@ def intraday_confirm(ticker: str) -> int:
                           progress=False, auto_adjust=True)
         if df5 is None or len(df5) < 10:
             return 0
+        latest_date = pd.to_datetime(df5.index[-1]).date()
+        day5 = df5[pd.to_datetime(df5.index).date == latest_date]
+        if day5 is None or len(day5) < 3:
+            day5 = df5.tail(min(len(df5), 20))
+
         close     = df5["Close"].squeeze()
-        volume    = df5["Volume"].squeeze()
-        vwap      = rolling_vwap(df5, min(20, len(df5)))
-        change    = (float(close.iloc[-1]) - float(close.iloc[-2])) / float(close.iloc[-2]) * 100
-        avg_vol   = float(volume.tail(10).mean())
-        last_vwap = float(vwap.iloc[-1]) if not np.isnan(vwap.iloc[-1]) else float(close.iloc[-1])
+        day_close = day5["Close"].squeeze()
+        day_vol   = day5["Volume"].squeeze()
+        day_vwap  = rolling_vwap(day5, min(20, len(day5)))
+        recent_change = (float(close.iloc[-1]) - float(close.iloc[-2])) / float(close.iloc[-2]) * 100
+        open_change   = (float(day_close.iloc[-1]) - float(day_close.iloc[0])) / float(day_close.iloc[0]) * 100
+        avg_vol       = float(day_vol.iloc[:-1].tail(10).mean()) if len(day_vol) > 10 else float(day_vol.mean())
+        last_vwap     = float(day_vwap.iloc[-1]) if not np.isnan(day_vwap.iloc[-1]) else float(day_close.iloc[-1])
         score = 0
-        if change > 0.3:                        score += 1
-        if float(close.iloc[-1]) > last_vwap:   score += 1
-        if float(volume.iloc[-1]) > avg_vol:    score += 1
+        if open_change > 1.0 or recent_change > 0.3:                  score += 1
+        if float(day_close.iloc[-1]) > last_vwap and open_change > 0: score += 1
+        if avg_vol > 0 and float(day_vol.iloc[-1]) > avg_vol * 1.3:   score += 1
         return score
     except Exception:
         return 0
@@ -927,7 +941,7 @@ def calculate_score(prob: float, runner: float, quality: str,
     weights = get_adaptive_weights(regime)
 
     prob_score    = (max(0, min(100, prob)) / 100) * (weights["prob"] * 100)
-    runner_score  = (max(0, min(10, runner)) / 10)  * (weights["runner"] * 100)
+    runner_score  = (max(0, min(100, runner)) / 100) * (weights["runner"] * 100)
     quality_map   = {"WEAK": 3, "HEALTHY": 10, "STRONG": 15}
     quality_score = quality_map.get(quality, 0) * (weights["quality"] / 0.15)
     rr_score      = min(weights["rr"] * 100,
@@ -1101,7 +1115,7 @@ from engine.probability_engine    import runner_probability
 from engine.runner_engine         import runner_prediction
 from engine.pullback_quality_engine import pullback_quality
 from engine.sector_engine         import sector_momentum
-from engine.liquidity_engine      import liquidity_trap
+from engine.liquidity_engine      import liquidity_trap, fake_breakout
 from engine.regime_engine         import detect_market_regime
 from config.universe              import ISSI_UNIVERSE, SECTOR_MAP, get_sector
 
@@ -1596,7 +1610,14 @@ def scan_core(market: dict, balance: float, top_n: int = 5,
             # VALID breakout  → boleh sampai +7% (momentum kuat, masih layak masuk)
             # WEAK breakout   → boleh sampai +5%
             # Tanpa breakout  → maksimal +3% (entry sudah terlambat)
-            freshness_limit = 7.0 if breakout == "VALID" else (5.0 if breakout == "WEAK" else 3.0)
+            strong_daily_momentum = momentum == 2 or ft == 2
+            freshness_limit = (
+                9.0 if breakout == "VALID" and strong_daily_momentum else
+                7.0 if breakout == "VALID" else
+                6.0 if breakout == "WEAK" and strong_daily_momentum else
+                5.0 if breakout == "WEAK" else
+                3.0
+            )
             if chg_pct > freshness_limit:
                 debug_log.append({"Ticker": tkr_clean, "Sector": sector,
                     "RSI": round(rsi_value, 1), "EMA_OK": "✅" if ema_ok else "❌",
@@ -1622,7 +1643,25 @@ def scan_core(market: dict, balance: float, top_n: int = 5,
             runner   = runner_prediction(df)
             quality  = pullback_quality(df)
             liq_raw  = liquidity_trap(df)
-            liq_str  = "🔴 TRAP" if liq_raw == "TRAP" else "🟢 OK"
+            fake_bo  = fake_breakout(df)
+            liq_str  = "🔴 TRAP" if liq_raw else "🟢 OK"
+
+            if liq_raw or fake_bo:
+                reason = "Liquidity trap" if liq_raw else "Fake breakout"
+                debug_log.append({"Ticker": tkr_clean, "Sector": sector,
+                    "RSI": round(rsi_value, 1), "EMA_OK": "✅" if ema_ok else "❌",
+                    "Bandar": bandar, "Breakout": breakout,
+                    "Confluence": "-", "RR": round(rr, 1), "Score": "-",
+                    "❌ Gugur di": reason})
+                continue
+
+            if breakout == "WEAK" and not (momentum == 2 or intraday >= 2 or ft == 2):
+                debug_log.append({"Ticker": tkr_clean, "Sector": sector,
+                    "RSI": round(rsi_value, 1), "EMA_OK": "✅" if ema_ok else "❌",
+                    "Bandar": bandar, "Breakout": breakout,
+                    "Confluence": "-", "RR": round(rr, 1), "Score": "-",
+                    "❌ Gugur di": "WEAK breakout tanpa momentum/intraday/follow-through kuat"})
+                continue
 
             # Filter 4: Confluence — [K2] min adaptif per regime
             conf_count, conf_signals, conf_passed = confluence_check(
@@ -2156,7 +2195,14 @@ def mini_scan_spike(spike_candidates: list):
             if bandar < 2 or breakout == "WAIT":
                 continue
 
-            freshness_limit = 7.0 if breakout == "VALID" else (5.0 if breakout == "WEAK" else 3.0)
+            strong_daily_momentum = momentum == 2 or ft == 2
+            freshness_limit = (
+                9.0 if breakout == "VALID" and strong_daily_momentum else
+                7.0 if breakout == "VALID" else
+                6.0 if breakout == "WEAK" and strong_daily_momentum else
+                5.0 if breakout == "WEAK" else
+                3.0
+            )
             if chg_pct > freshness_limit:
                 continue
 
@@ -2165,7 +2211,14 @@ def mini_scan_spike(spike_candidates: list):
             runner   = runner_prediction(df_daily)
             quality  = pullback_quality(df_daily)
             liq_raw  = liquidity_trap(df_daily)
-            liq_str  = "🔴 TRAP" if liq_raw == "TRAP" else "🟢 OK"
+            fake_bo  = fake_breakout(df_daily)
+            liq_str  = "🔴 TRAP" if liq_raw else "🟢 OK"
+
+            if liq_raw or fake_bo:
+                continue
+
+            if breakout == "WEAK" and not (momentum == 2 or intraday >= 2 or ft == 2):
+                continue
 
             conf_count, _, conf_passed = confluence_check(
                 momentum, accum, bandar, breakout, rr, ema_ok, "SIDEWAYS"
