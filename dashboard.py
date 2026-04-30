@@ -30,6 +30,9 @@ from datetime import datetime, date, timedelta
 import time
 import os
 import json
+import logging
+import threading
+import tempfile
 import requests
 import plotly.express as px
 import plotly.graph_objects as go
@@ -47,30 +50,86 @@ TELEGRAM_CHAT   = os.environ.get("TELEGRAM_CHAT", "")
 STATE_FILE      = "ats_state.json"
 JOURNAL_FILE    = "journal.csv"
 ACTIVE_FILE     = "active_trades.csv"
+LOG_FILE        = "ats.log"
+
+# ============================================================
+# [Task 1] STRUCTURED LOGGING — ats.log
+# ============================================================
+def _setup_logger() -> logging.Logger:
+    """Setup file logger untuk ats.log dengan format terstruktur."""
+    logger = logging.getLogger("ats")
+    if logger.handlers:
+        return logger   # sudah di-setup, hindari duplicate handler
+
+    logger.setLevel(logging.INFO)
+    fmt = logging.Formatter(
+        "%(asctime)s | %(levelname)-7s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    # File handler
+    try:
+        fh = logging.FileHandler(LOG_FILE, mode="a", encoding="utf-8")
+        fh.setFormatter(fmt)
+        logger.addHandler(fh)
+    except Exception:
+        pass
+
+    # Console handler (juga ke stdout untuk Railway logs)
+    sh = logging.StreamHandler()
+    sh.setFormatter(fmt)
+    logger.addHandler(sh)
+
+    logger.propagate = False
+    return logger
+
+LOG = _setup_logger()
+
+def log_scan_event(ticker: str, status: str, score: float | None = None,
+                   reason: str = "", regime: str = "-",
+                   rr: float | None = None, conf: int | None = None,
+                   extra: dict | None = None):
+    """Structured logging satu event scan."""
+    parts = [f"ticker={ticker}", f"status={status}", f"regime={regime}"]
+    if score is not None: parts.append(f"score={score:.1f}")
+    if rr    is not None: parts.append(f"rr={rr:.1f}")
+    if conf  is not None: parts.append(f"conf={conf}")
+    if reason:            parts.append(f"reason='{reason}'")
+    if extra:
+        for k, v in extra.items():
+            parts.append(f"{k}={v}")
+    LOG.info(" | ".join(parts))
+
+# ============================================================
+# [Task 3] THREAD SAFETY — locks untuk shared state
+# ============================================================
+_breadth_lock = threading.Lock()
+_spike_lock   = threading.Lock()
+_state_lock   = threading.Lock()
+_telegram_lock = threading.Lock()
 
 # ============================================================
 # VERSION HISTORY
 # ============================================================
-APP_VERSION  = "V5.1"
+APP_VERSION  = "V5.2"
 APP_UPDATED  = "30 Apr 2025"
 
 VERSION_HISTORY = [
     {
-        "versi":   "V5.1",
+        "versi":   "V5.2",
         "tanggal": "30 Apr 2025",
-        "tipe":    "Smart Upgrade",
-        "ringkasan": "Adaptive Weights + Overfitting Control — upgrade yang tidak memberatkan sistem",
+        "tipe":    "Stabilization & Visibility",
+        "ringkasan": "7 task hardening — logic trading TIDAK diubah, hanya stabilitas dan observability",
         "detail": [
-            "[P4] Adaptive Weight Engine — bobot scoring berubah per regime market",
-            "  BULLISH: momentum +20%, runner +25% → tangkap tren kuat",
-            "  SIDEWAYS: RR +25%, akumulasi +20% → selektif dan disiplin",
-            "  DISTRIBUTION: likuiditas dominan → hindari perangkap",
-            "  VOLATILE: intraday +30% → prioritas data real-time",
-            "[P6] Overfitting Control — starvation detection",
-            "  Kalau tidak ada kandidat sama sekali → threshold auto-dilonggarkan 10%",
-            "  Tidak terjebak terlalu selektif saat market sideways",
-            "P1/P2/P3/P5 TIDAK diaktifkan — terlalu memberatkan tanpa data validasi",
-            "Arsitektur tetap ringan — tidak ada penalti tambahan ke scoring",
+            "[T1] Structured logging ke ats.log: timestamp, ticker, score, regime, RR, conf, alasan",
+            "[T2] Score Breakdown explainability — expander baru menjelaskan setiap komponen score per kandidat",
+            "[T3] Thread safety: threading.Lock untuk _spike_state, _state, telegram",
+            "[T4] Atomic JSON save: temp file → flush → fsync → os.replace (anti-corrupt)",
+            "[T5] Telegram tidak silent fail — retry 2x, log warning, status response",
+            "[T6] Batch yfinance download 30 ticker per batch + retry — fix missing TKIM/INKP",
+            "[T7] Config validation — clamp param ke range valid, fallback default jika corrupt",
+            "Logic trading, scoring formula, filtering: TIDAK diubah sama sekali",
+            "Tujuan: scan consistency, debugging clarity, reliability",
         ]
     },
     {
@@ -221,14 +280,45 @@ def get_wib_now() -> str:
 # ============================================================
 # TELEGRAM
 # ============================================================
-def send_telegram(message: str):
+def send_telegram(message: str, retries: int = 2):
+    """
+    [Task 5] Kirim Telegram dengan logging dan retry ringan.
+    Tidak lagi silent fail — semua error tercatat di ats.log.
+    """
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT:
-        return
+        LOG.warning("Telegram tidak terkirim: TOKEN atau CHAT belum di-set")
+        return False
+
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    try:
-        requests.post(url, data={"chat_id": TELEGRAM_CHAT, "text": message}, timeout=5)
-    except Exception:
-        pass
+
+    with _telegram_lock:   # [Task 3] thread-safe send
+        for attempt in range(retries + 1):
+            try:
+                resp = requests.post(
+                    url,
+                    data={"chat_id": TELEGRAM_CHAT, "text": message},
+                    timeout=10,
+                )
+                if resp.status_code == 200:
+                    if attempt > 0:
+                        LOG.info(f"Telegram berhasil terkirim (retry {attempt})")
+                    return True
+                else:
+                    LOG.warning(
+                        f"Telegram failed status={resp.status_code} "
+                        f"body={resp.text[:200]} attempt={attempt+1}/{retries+1}"
+                    )
+            except requests.Timeout:
+                LOG.warning(f"Telegram timeout attempt={attempt+1}/{retries+1}")
+            except Exception as e:
+                LOG.warning(f"Telegram error: {type(e).__name__}: {str(e)[:200]} attempt={attempt+1}")
+
+            # Retry dengan backoff
+            if attempt < retries:
+                time.sleep(1.5 * (attempt + 1))
+
+        LOG.error(f"Telegram FAILED setelah {retries+1} percobaan: {message[:80]}...")
+        return False
 
 # ============================================================
 # PERSISTENSI STATE  [F2][F5][I5]
@@ -241,40 +331,123 @@ DEFAULT_CYBER = {
     "adjustment_history": []
 }
 
+# [Task 7] CONFIG VALIDATION — guard against invalid persisted state
+CONFIG_RANGES = {
+    "min_score":             (50, 95),
+    "execute_now_threshold": (70, 98),
+    "min_rr":                (1.0, 5.0),
+}
+
+def validate_cyber_params(params: dict) -> dict:
+    """
+    [Task 7] Validasi cybernetic params, clamp ke range valid.
+    Return params yang sudah divalidasi (tidak modify input).
+    Log warning kalau ada nilai yang harus di-clamp.
+    """
+    if not isinstance(params, dict):
+        LOG.warning(f"validate_cyber_params: bukan dict ({type(params)}), pakai DEFAULT")
+        return DEFAULT_CYBER.copy()
+
+    validated = params.copy()
+
+    for key, (lo, hi) in CONFIG_RANGES.items():
+        try:
+            val = float(validated.get(key, DEFAULT_CYBER[key]))
+        except (TypeError, ValueError):
+            LOG.warning(f"config invalid type {key}={validated.get(key)}, fallback default")
+            validated[key] = DEFAULT_CYBER[key]
+            continue
+
+        if val < lo or val > hi:
+            clamped = max(lo, min(hi, val))
+            LOG.warning(f"config {key}={val} di luar range [{lo},{hi}], clamp ke {clamped}")
+            validated[key] = clamped
+        else:
+            validated[key] = val
+
+    # Pastikan keys lain ada
+    for key in DEFAULT_CYBER:
+        if key not in validated:
+            validated[key] = DEFAULT_CYBER[key]
+
+    # adjustment_history harus list
+    if not isinstance(validated.get("adjustment_history"), list):
+        validated["adjustment_history"] = []
+
+    return validated
+
 def load_state() -> dict:
+    """[Task 7] Load state dengan validasi config + logging."""
     if os.path.exists(STATE_FILE):
         try:
-            with open(STATE_FILE, "r") as f:
-                return json.load(f)
-        except Exception:
-            pass
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            data["cybernetic_params"] = validate_cyber_params(
+                data.get("cybernetic_params", DEFAULT_CYBER.copy())
+            )
+            try:
+                bal = float(data.get("balance", 800_000))
+                if bal < 100_000:
+                    LOG.warning(f"balance terlalu kecil ({bal}), set ke 800.000")
+                    bal = 800_000
+                data["balance"] = bal
+            except (TypeError, ValueError):
+                LOG.warning("balance corrupt, fallback ke 800.000")
+                data["balance"] = 800_000
+            if not isinstance(data.get("signal_lock"), dict):
+                data["signal_lock"] = {}
+            return data
+        except Exception as e:
+            LOG.error(f"load_state corrupt: {type(e).__name__}: {e} — pakai default")
     return {
         "cybernetic_params": DEFAULT_CYBER.copy(),
-        "signal_lock": {},
-        "balance": 800_000,   # [I5] balance persist
+        "signal_lock":       {},
+        "balance":           800_000,
     }
 
 def save_state():
-    # [F5] Bersihkan signal_lock yang sudah > 7 hari
-    now_ts    = time.time()
-    sig_lock  = st.session_state.signal_lock
-    sig_lock  = {k: v for k, v in sig_lock.items() if now_ts - v < 7 * 86400}
-    st.session_state.signal_lock = sig_lock
+    """
+    [Task 4] Atomic JSON save — mencegah corrupt saat concurrent write.
+    Pattern: write to temp → flush → fsync → os.replace.
+    [Task 3] Thread-safe via _state_lock.
+    """
+    with _state_lock:
+        # Bersihkan signal_lock yang sudah > 7 hari
+        now_ts    = time.time()
+        sig_lock  = st.session_state.signal_lock
+        sig_lock  = {k: v for k, v in sig_lock.items() if now_ts - v < 7 * 86400}
+        st.session_state.signal_lock = sig_lock
 
-    cp = st.session_state.cybernetic_params.copy()
-    if isinstance(cp.get("last_adjust_date"), (date, datetime)):
-        cp["last_adjust_date"] = str(cp["last_adjust_date"])
+        cp = st.session_state.cybernetic_params.copy()
+        if isinstance(cp.get("last_adjust_date"), (date, datetime)):
+            cp["last_adjust_date"] = str(cp["last_adjust_date"])
 
-    data = {
-        "cybernetic_params": cp,
-        "signal_lock":       sig_lock,
-        "balance":           st.session_state.balance,   # [I5]
-    }
-    try:
-        with open(STATE_FILE, "w") as f:
-            json.dump(data, f, indent=2)
-    except Exception:
-        pass
+        data = {
+            "cybernetic_params": cp,
+            "signal_lock":       sig_lock,
+            "balance":           st.session_state.balance,
+        }
+
+        # Atomic write
+        try:
+            dir_path = os.path.dirname(os.path.abspath(STATE_FILE)) or "."
+            fd, tmp_path = tempfile.mkstemp(
+                prefix=".ats_state_", suffix=".tmp", dir=dir_path
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, STATE_FILE)   # atomic rename
+            except Exception as e:
+                LOG.error(f"save_state atomic write gagal: {type(e).__name__}: {e}")
+                if os.path.exists(tmp_path):
+                    try: os.remove(tmp_path)
+                    except Exception: pass
+                raise
+        except Exception as e:
+            LOG.error(f"save_state EXCEPTION: {type(e).__name__}: {str(e)[:200]}")
 
 # ============================================================
 # HELPER FORMAT
@@ -838,25 +1011,75 @@ MIN_DAILY_VOLUME_IDR = 500_000_000   # Rp 500 juta/hari
 
 @st.cache_data(ttl=300)
 def load_market() -> dict[str, pd.DataFrame]:
-    raw = yf.download(
-        tickers=ISSI_UNIVERSE, period="6mo", interval="1d",
-        group_by="ticker", progress=False, auto_adjust=True,
-    )
-    market = {}
-    for s in ISSI_UNIVERSE:
-        try:
-            df = raw[s].dropna()
-            if len(df) < 60:                               continue
-            last_close = float(df["Close"].squeeze().iloc[-1])
-            if last_close <= 0:                            continue
-            if df["Volume"].squeeze().tail(5).mean() <= 0: continue
-            avg_vol_20    = float(df["Volume"].squeeze().tail(20).mean())
-            est_daily_idr = last_close * avg_vol_20 * 100
-            if est_daily_idr < MIN_DAILY_VOLUME_IDR:
-                continue
-            market[s] = df
-        except Exception:
+    """
+    [Task 6] Batch download yfinance — 30 ticker per batch dengan retry.
+    Mengurangi missing ticker seperti TKIM/INKP yang sebelumnya gagal fetch
+    saat seluruh universe didownload sekaligus.
+    """
+    BATCH_SIZE      = 30
+    MAX_RETRIES     = 2
+    market: dict[str, pd.DataFrame] = {}
+    failed_tickers: list[str] = []
+
+    universe = list(ISSI_UNIVERSE)
+    n_batches = (len(universe) + BATCH_SIZE - 1) // BATCH_SIZE
+
+    LOG.info(f"load_market START: {len(universe)} ticker dalam {n_batches} batch")
+
+    for batch_idx in range(n_batches):
+        batch = universe[batch_idx * BATCH_SIZE : (batch_idx + 1) * BATCH_SIZE]
+
+        last_err = None
+        raw = None
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                raw = yf.download(
+                    tickers=batch, period="6mo", interval="1d",
+                    group_by="ticker", progress=False, auto_adjust=True,
+                    threads=True,
+                )
+                if raw is not None and not raw.empty:
+                    break
+            except Exception as e:
+                last_err = e
+                LOG.warning(f"batch {batch_idx+1}/{n_batches} attempt {attempt+1} error: {type(e).__name__}: {str(e)[:120]}")
+                time.sleep(1.0 * (attempt + 1))
+
+        if raw is None or raw.empty:
+            LOG.error(f"batch {batch_idx+1}/{n_batches} GAGAL setelah {MAX_RETRIES+1} percobaan: {last_err}")
+            failed_tickers.extend(batch)
             continue
+
+        # Parse setiap ticker di batch ini
+        for s in batch:
+            try:
+                # Kalau batch hanya 1 ticker, struktur df berbeda
+                df = raw[s].dropna() if len(batch) > 1 else raw.dropna()
+                if len(df) < 60:
+                    failed_tickers.append(s)
+                    continue
+                last_close = float(df["Close"].squeeze().iloc[-1])
+                if last_close <= 0:
+                    failed_tickers.append(s)
+                    continue
+                if df["Volume"].squeeze().tail(5).mean() <= 0:
+                    failed_tickers.append(s)
+                    continue
+                avg_vol_20    = float(df["Volume"].squeeze().tail(20).mean())
+                est_daily_idr = last_close * avg_vol_20 * 100
+                if est_daily_idr < MIN_DAILY_VOLUME_IDR:
+                    continue   # likuiditas terlalu rendah, bukan failure
+                market[s] = df
+            except Exception as e:
+                failed_tickers.append(s)
+                LOG.warning(f"parse {s} gagal: {type(e).__name__}: {str(e)[:80]}")
+
+    n_loaded = len(market)
+    n_failed = len(failed_tickers)
+    LOG.info(f"load_market DONE: {n_loaded} ticker loaded, {n_failed} gagal")
+    if failed_tickers:
+        LOG.warning(f"Ticker gagal fetch: {', '.join(failed_tickers[:20])}{'...' if len(failed_tickers)>20 else ''}")
+
     return market
 
 
@@ -1338,24 +1561,51 @@ def scan_core(market: dict, balance: float, top_n: int = 5,
 
             # ── SCORING V5.1 — P4 Adaptive + P6 Starvation ─
             # P4: Adaptive score dengan regime weights
-            score = calculate_score(prob, runner, quality, rr, liq_str, bandar, regime)
+            base_score = calculate_score(prob, runner, quality, rr, liq_str, bandar, regime)
 
             # Adaptive bonus multipliers per regime
-            score += (momentum * 0.8 * ada_weights["momentum_w"] +
-                      accum    * 0.9 * ada_weights["accum_w"]    +
-                      ft       * 0.7 * ada_weights["ft_w"]        +
-                      intraday * 0.5 * ada_weights["intraday_w"])
-            if momentum == 2:               score += 1
-            if ft == 2:                     score += 1
-            if last_price > ema_val * 1.01: score += 1
+            momentum_bonus = momentum * 0.8 * ada_weights["momentum_w"]
+            accum_bonus    = accum    * 0.9 * ada_weights["accum_w"]
+            ft_bonus       = ft       * 0.7 * ada_weights["ft_w"]
+            intra_bonus    = intraday * 0.5 * ada_weights["intraday_w"]
 
-            # Sector adjustment
-            score += sector_score_adj
+            extra_bonus = 0.0
+            if momentum == 2:               extra_bonus += 1
+            if ft == 2:                     extra_bonus += 1
+            if last_price > ema_val * 1.01: extra_bonus += 1
 
+            score = (base_score + momentum_bonus + accum_bonus +
+                     ft_bonus + intra_bonus + extra_bonus + sector_score_adj)
             score = min(100.0, max(0.0, score))
+
+            # [Task 2] Score breakdown untuk explainability
+            score_breakdown = {
+                "base":      round(base_score, 1),
+                "momentum":  round(momentum_bonus, 1),
+                "accum":     round(accum_bonus, 1),
+                "ft":        round(ft_bonus, 1),
+                "intraday":  round(intra_bonus, 1),
+                "extra":     round(extra_bonus, 1),
+                "sector":    round(sector_score_adj, 1),
+                "final":     round(score, 1),
+            }
 
             # Info sektor untuk debug
             sector_note = "✅" if sec_strength > 0 else f"⚠️ adj{sector_score_adj:+.0f}"
+
+            # [Task 1] Log scan event lolos
+            log_scan_event(
+                ticker=tkr_clean, status="LOLOS",
+                score=score, regime=regime, rr=rr, conf=conf_count,
+                extra={
+                    "sector": sector,
+                    "breakout": breakout,
+                    "bandar": bandar,
+                    "rsi": round(rsi_value, 1),
+                    "atr_pct": round(atr_pct, 2),
+                    "chg": round(chg_pct, 2),
+                }
+            )
 
             debug_log.append({"Ticker": tkr_clean, "Sector": sector,
                 "RSI": round(rsi_value, 1), "EMA_OK": "✅" if ema_ok else "❌",
@@ -1378,6 +1628,7 @@ def scan_core(market: dict, balance: float, top_n: int = 5,
                 "Entry": idr(entry), "SL": idr(sl), "Target": idr(target),
                 "Lot": lot, "Timing": timing, "ATR": round(atr, 0),
                 "EMA50": round(ema_val, 0),
+                "ScoreBreakdown": score_breakdown,   # [Task 2]
             })
 
         except Exception as e:
@@ -1429,8 +1680,11 @@ def scan_core(market: dict, balance: float, top_n: int = 5,
 # RUN SCANNER (UI) — [F1] pakai scan_core
 # ============================================================
 def run_scanner():
+    LOG.info("=" * 60)
+    LOG.info(f"SCAN MANUAL START | {datetime.now(WIB).strftime('%Y-%m-%d %H:%M:%S WIB')}")
     market = load_market()
     if not market:
+        LOG.error("SCAN ABORT: gagal load market data")
         st.error("Gagal memuat data market. Cek koneksi internet.")
         return
 
@@ -1504,7 +1758,10 @@ def run_scanner():
 # AUTO SCAN BACKGROUND — [F1] pakai scan_core, [F2] baca balance
 # ============================================================
 def auto_scan_background():
+    LOG.info("=" * 60)
+    LOG.info(f"AUTOSCAN START | {datetime.now(WIB).strftime('%Y-%m-%d %H:%M:%S WIB')}")
     if not is_market_open():
+        LOG.info("AUTOSCAN SKIP: market tutup")
         return
 
     now_label = datetime.now(WIB).strftime("%H:%M WIB")
@@ -1619,11 +1876,12 @@ def intraday_refresh_job():
     now_wib = datetime.now(WIB)
     today   = now_wib.date()
 
-    # Reset spike_alerts tiap hari baru
-    if _spike_state["last_spike_date"] != today:
-        _spike_state["spike_alerts"]    = []
-        _spike_state["last_spike_date"] = today
-        _spike_state["last_prices"]     = {}
+    # [Task 3] Thread-safe access ke _spike_state
+    with _spike_lock:
+        if _spike_state["last_spike_date"] != today:
+            _spike_state["spike_alerts"]    = []
+            _spike_state["last_spike_date"] = today
+            _spike_state["last_prices"]     = {}
 
     try:
         # Download bulk intraday terbaru — ringan karena hanya 1d/5m
@@ -1654,11 +1912,14 @@ def intraday_refresh_job():
                 chg_from_open = (current_px - open_px) / open_px * 100
 
                 # Cek perubahan dari snapshot sebelumnya
-                prev_px     = _spike_state["last_prices"].get(tkr, open_px)
-                chg_recent  = (current_px - prev_px) / prev_px * 100 if prev_px > 0 else 0
+                with _spike_lock:
+                    prev_px     = _spike_state["last_prices"].get(tkr, open_px)
+                    chg_recent  = (current_px - prev_px) / prev_px * 100 if prev_px > 0 else 0
+                    # Update snapshot harga
+                    _spike_state["last_prices"][tkr] = current_px
 
-                # Update snapshot harga
-                _spike_state["last_prices"][tkr] = current_px
+                    # Cek apakah ticker ini sudah pernah dapat alert hari ini
+                    already_alerted = tkr in _spike_state["spike_alerts"]
 
                 # Deteksi spike: naik > 3% dari open ATAU > 2% dari 15 menit lalu
                 avg_vol = float(volume5.tail(20).mean()) if len(volume5) >= 20 else float(volume5.mean())
@@ -1668,7 +1929,7 @@ def intraday_refresh_job():
                 is_price_spike  = chg_from_open > 3.0 or chg_recent > 2.0
                 is_volume_spike = vol_ratio > 1.5
 
-                if is_price_spike and is_volume_spike and tkr not in _spike_state["spike_alerts"]:
+                if is_price_spike and is_volume_spike and not already_alerted:
                     spike_candidates.append({
                         "ticker":        tkr,
                         "current_px":    current_px,
@@ -1836,7 +2097,8 @@ def mini_scan_spike(spike_candidates: list):
                 f"Pasang SL. No FOMO."
             )
             send_telegram(msg)
-            _spike_state["spike_alerts"].append(tkr)
+            with _spike_lock:
+                _spike_state["spike_alerts"].append(tkr)
 
         except Exception:
             continue
@@ -2594,6 +2856,42 @@ with tabs[1]:
 
     elif st.session_state.scan_result is not None:
         st.warning("⚠️ Tidak ada kandidat hari ini — market sedang tidak kondusif.")
+
+    # ── [Task 2] Score Breakdown — Explainability ────────────
+    if (st.session_state.scan_result is not None and
+        not st.session_state.scan_result.empty and
+        "ScoreBreakdown" in st.session_state.scan_result.columns):
+        with st.expander("🔬 Score Breakdown — Bagaimana score dihitung?", expanded=False):
+            st.caption(
+                "Penjabaran komponen score per kandidat. "
+                "Berguna untuk debug — kenapa saham X mendapat score tertentu."
+            )
+            for _, row in st.session_state.scan_result.iterrows():
+                bd = row.get("ScoreBreakdown", {})
+                if not isinstance(bd, dict):
+                    continue
+                tkr = row.get("Ticker", "-")
+
+                lines_md = []
+                lines_md.append(f"**{tkr}** (Score: {bd.get('final', 0):.1f})")
+
+                # Format component dengan + atau -
+                def fmt(v: float, label: str) -> str:
+                    if v > 0:    return f"  + {label}: **+{v:.1f}**"
+                    elif v < 0:  return f"  − {label}: **{v:.1f}**"
+                    else:        return f"  · {label}: 0"
+
+                lines_md.append(f"  base score: {bd.get('base', 0):.1f}")
+                if bd.get("momentum", 0) != 0: lines_md.append(fmt(bd["momentum"], "momentum"))
+                if bd.get("accum", 0)    != 0: lines_md.append(fmt(bd["accum"],    "accumulation"))
+                if bd.get("ft", 0)       != 0: lines_md.append(fmt(bd["ft"],       "follow-through"))
+                if bd.get("intraday", 0) != 0: lines_md.append(fmt(bd["intraday"], "intraday"))
+                if bd.get("extra", 0)    != 0: lines_md.append(fmt(bd["extra"],    "bonus tambahan"))
+                if bd.get("sector", 0)   != 0: lines_md.append(fmt(bd["sector"],   "sector adjustment"))
+                lines_md.append(f"  ─────────────────────────────")
+                lines_md.append(f"  **Final: {bd.get('final', 0):.1f}**")
+                st.markdown("\n".join(lines_md))
+                st.markdown("")   # spacing
 
     # ── Heatmap langsung (tidak di expander) ─────────────────
     has_heatmap = st.session_state.heatmap_data is not None and not st.session_state.heatmap_data.empty
