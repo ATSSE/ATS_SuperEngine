@@ -529,6 +529,7 @@ def save_state():
             "cybernetic_params": cp,
             "signal_lock":       sig_lock,
             "balance":           st.session_state.balance,
+            "last_regime":       st.session_state.get("last_regime", "SIDEWAYS"),
         }
 
         # Atomic write
@@ -802,6 +803,22 @@ def daily_change_pct(df: pd.DataFrame) -> float:
     close = df["Close"].squeeze()
     return round((float(close.iloc[-1]) - float(close.iloc[-2])) / float(close.iloc[-2]) * 100, 2)
 
+
+# [FIX #3] Helper untuk normalize return value engine eksternal
+# Engine bisa return: bool True/False, string "TRAP"/"OK", atau int 0/1
+# Defensive coding — tidak bergantung pada specific return type
+def is_trap_signal(value) -> bool:
+    """Normalize liquidity_trap / fake_breakout return ke boolean."""
+    if value is True or value is False:
+        return bool(value)
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        # Hanya string yang explicit "TRAP" yang dianggap True
+        # String "OK" / "" / lainnya → False
+        return value.strip().upper() in ("TRAP", "TRUE", "1", "YES")
+    return False
+
 # ============================================================
 # ▓▓▓ DEEP ARCHITECTURE UPGRADE — V5.1 ▓▓▓
 # Modular engines, backward compatible, no redesign
@@ -937,6 +954,10 @@ def calculate_score(prob: float, runner: float, quality: str,
     """
     Scoring dengan adaptive weights per regime.
     Backward compatible — regime default SIDEWAYS = perilaku lama.
+
+    [FIX #2] RR bonus +3 untuk RR>=2.5 sekarang clamp ke maksimum
+    (weights["rr"] * 100) — sebelumnya bisa overflow saat BULLISH.
+    Dengan fix ini, max base_score dijamin <= 100.0 di semua regime.
     """
     weights = get_adaptive_weights(regime)
 
@@ -944,13 +965,22 @@ def calculate_score(prob: float, runner: float, quality: str,
     runner_score  = (max(0, min(100, runner)) / 100) * (weights["runner"] * 100)
     quality_map   = {"WEAK": 3, "HEALTHY": 10, "STRONG": 15}
     quality_score = quality_map.get(quality, 0) * (weights["quality"] / 0.15)
-    rr_score      = min(weights["rr"] * 100,
-                        (max(0, min(4.0, rr)) / 4.0) * (weights["rr"] * 100))
-    if rr >= 2.5:  rr_score = min(weights["rr"] * 100, rr_score + 3)
+
+    # RR base score — dijamin <= weights["rr"] * 100
+    rr_max  = weights["rr"] * 100
+    rr_base = (max(0, min(4.0, rr)) / 4.0) * rr_max
+    if rr >= 2.5:
+        rr_base = min(rr_max, rr_base + 3)   # bonus, tapi tetap di-cap di rr_max
+    rr_score = rr_base
+
     liq_score  = weights["liquidity"] * 100 if "OK" in str(liquidity) else 0
     bandar_pts = (max(0, min(4, bandar_score)) / 4) * (weights["bandar"] * 100)
 
-    return round(prob_score + runner_score + quality_score + rr_score + liq_score + bandar_pts, 2)
+    total = prob_score + runner_score + quality_score + rr_score + liq_score + bandar_pts
+    # Safety cap: dengan adaptive weights, max teoretis bisa sedikit > 100
+    # karena quality_map.STRONG=15 di-scale dengan multiplier (W/0.15).
+    # Cap di 100 untuk konsistensi distribusi score.
+    return round(min(100.0, total), 2)
 
 
 
@@ -1644,10 +1674,13 @@ def scan_core(market: dict, balance: float, top_n: int = 5,
             quality  = pullback_quality(df)
             liq_raw  = liquidity_trap(df)
             fake_bo  = fake_breakout(df)
-            liq_str  = "🔴 TRAP" if liq_raw else "🟢 OK"
+            # [FIX #3] Normalize return value — defensive coding terhadap engine eksternal
+            is_liq_trap = is_trap_signal(liq_raw)
+            is_fake_bo  = is_trap_signal(fake_bo)
+            liq_str     = "🔴 TRAP" if is_liq_trap else "🟢 OK"
 
-            if liq_raw or fake_bo:
-                reason = "Liquidity trap" if liq_raw else "Fake breakout"
+            if is_liq_trap or is_fake_bo:
+                reason = "Liquidity trap" if is_liq_trap else "Fake breakout"
                 debug_log.append({"Ticker": tkr_clean, "Sector": sector,
                     "RSI": round(rsi_value, 1), "EMA_OK": "✅" if ema_ok else "❌",
                     "Bandar": bandar, "Breakout": breakout,
@@ -2102,19 +2135,29 @@ def intraday_refresh_job():
                 continue
 
         # Kalau ada spike candidate → trigger mini scan
+        # [FIX #1] Baca regime dari state file (di-set oleh scan_core terakhir)
+        # — fallback "SIDEWAYS" jika belum ada scan
         if spike_candidates:
-            mini_scan_spike(spike_candidates)
+            try:
+                _state = load_state()
+                regime_for_spike = _state.get("last_regime", "SIDEWAYS")
+            except Exception:
+                regime_for_spike = "SIDEWAYS"
+            mini_scan_spike(spike_candidates, regime=regime_for_spike)
 
     except Exception as e:
         pass   # Silent fail — jangan spam Telegram untuk refresh error
 
 
-def mini_scan_spike(spike_candidates: list):
+def mini_scan_spike(spike_candidates: list, regime: str = "SIDEWAYS"):
     """
     Mini scan khusus untuk ticker yang terdeteksi spike.
     Hanya download daily data ticker tersebut, inject intraday,
     lalu jalankan full scoring pipeline.
     Kirim Telegram hanya kalau lolos semua filter.
+
+    [FIX #1] regime parameter — sebelumnya hardcode 'SIDEWAYS' yang menyebabkan
+    spike alert inkonsisten dengan main scanner saat market BULLISH.
     """
     if not spike_candidates:
         return
@@ -2171,7 +2214,7 @@ def mini_scan_spike(spike_candidates: list):
             _state       = load_state()
             balance      = _state.get("balance", 800_000)
             sector       = get_sector(tkr_jk)
-            rsi_ok, rsi_value = rsi_gate(df_daily, "SIDEWAYS")
+            rsi_ok, rsi_value = rsi_gate(df_daily, regime)
             if not rsi_ok:
                 continue
 
@@ -2212,16 +2255,19 @@ def mini_scan_spike(spike_candidates: list):
             quality  = pullback_quality(df_daily)
             liq_raw  = liquidity_trap(df_daily)
             fake_bo  = fake_breakout(df_daily)
-            liq_str  = "🔴 TRAP" if liq_raw else "🟢 OK"
+            # [FIX #3] Normalize return value — defensive coding
+            is_liq_trap = is_trap_signal(liq_raw)
+            is_fake_bo  = is_trap_signal(fake_bo)
+            liq_str     = "🔴 TRAP" if is_liq_trap else "🟢 OK"
 
-            if liq_raw or fake_bo:
+            if is_liq_trap or is_fake_bo:
                 continue
 
             if breakout == "WEAK" and not (momentum == 2 or intraday >= 2 or ft == 2):
                 continue
 
             conf_count, _, conf_passed = confluence_check(
-                momentum, accum, bandar, breakout, rr, ema_ok, "SIDEWAYS"
+                momentum, accum, bandar, breakout, rr, ema_ok, regime
             )
             if not conf_passed:
                 continue
