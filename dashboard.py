@@ -113,10 +113,31 @@ _telegram_lock = threading.Lock()
 # ============================================================
 # VERSION HISTORY
 # ============================================================
-APP_VERSION  = "V5.5"
+APP_VERSION  = "V5.5.1"
 APP_UPDATED  = "30 Apr 2025"
 
 VERSION_HISTORY = [
+    {
+        "versi":   "V5.5.1",
+        "tanggal": "30 Apr 2025",
+        "tipe":    "Targeted Audit Fix",
+        "ringkasan": "3 critical fix dari deep technical audit — no architecture rewrite, minimal delta",
+        "detail": [
+            "[FIX #1] mini_scan_spike() tidak lagi hardcode 'SIDEWAYS' regime",
+            "  Sebelumnya: spike di market BULLISH pakai RSI gate 42-72 (salah)",
+            "  Sekarang: regime di-pass dari intraday_refresh_job via state file",
+            "  Spike alert konsisten dengan main scanner di semua regime",
+            "[FIX #2] Score overflow di BULLISH regime dieliminasi",
+            "  Sebelumnya: max base_score = 103 sebelum cap min(100)",
+            "  Sekarang: RR bonus +3 di-clamp dalam rr_max, total dijamin <= 100",
+            "  Distribusi score top-end tidak lagi terkompresi → ranking diskriminatif",
+            "[FIX #3] Defensive coding terhadap engine eksternal black box",
+            "  Helper baru is_trap_signal() — normalize bool/string/int return",
+            "  liquidity_trap & fake_breakout tetap aman jika engine ubah return type",
+            "Validation: 0% score distortion untuk 8 test case realistic",
+            "save_state sekarang simpan last_regime untuk continuity intraday refresh",
+        ]
+    },
     {
         "versi":   "V5.5",
         "tanggal": "30 Apr 2025",
