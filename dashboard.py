@@ -113,10 +113,27 @@ _telegram_lock = threading.Lock()
 # ============================================================
 # VERSION HISTORY
 # ============================================================
-APP_VERSION  = "V5.6"
+APP_VERSION  = "V5.6.1"
 APP_UPDATED  = "01 Mei 2025"
 
 VERSION_HISTORY = [
+    {
+        "versi":   "V5.6.1",
+        "tanggal": "01 Mei 2025",
+        "tipe":    "Visual Identity",
+        "ringkasan": "BMW M Sport racing stripes di header — motivation accent",
+        "detail": [
+            "Diagonal racing stripes di pojok kanan header card",
+            "3 warna BMW M Sport authentic:",
+            "  Light Blue #0066B1 (BMW Motorsport)",
+            "  Dark Blue #1C3D7C (BMW M)",
+            "  Red #E22718 (BMW M signature)",
+            "Pure CSS pseudo-element — zero logic touch, zero performance impact",
+            "Stripes opacity 0.85 dengan diagonal 110deg untuk racing livery feel",
+            "Konten header tetap readable dengan z-index layering",
+            "Reminder visual untuk motivasi capai target trading 🏎️",
+        ]
+    },
     {
         "versi":   "V5.6",
         "tanggal": "01 Mei 2025",
@@ -2685,6 +2702,40 @@ html, body, [class*="css"] {
     align-items: center;
     justify-content: space-between;
     box-shadow: 0 4px 24px rgba(0,100,255,0.08), 0 0 0 1px rgba(255,255,255,0.04);
+    position: relative;
+    overflow: hidden;
+}
+/* BMW M Sport diagonal stripes — racing livery accent */
+.ats-header::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 140px;
+    height: 100%;
+    background: linear-gradient(
+        110deg,
+        transparent             0%,
+        transparent            42%,
+        #0066B1                42%,   /* BMW Motorsport Light Blue */
+        #0066B1                49%,
+        transparent            49%,
+        transparent            55%,
+        #1C3D7C                55%,   /* BMW M Dark Blue */
+        #1C3D7C                64%,
+        transparent            64%,
+        transparent            72%,
+        #E22718                72%,   /* BMW M Red */
+        #E22718                85%,
+        transparent            85%
+    );
+    opacity: 0.85;
+    pointer-events: none;
+    z-index: 0;
+}
+.ats-header > * {
+    position: relative;
+    z-index: 1;   /* konten tetap di atas stripes */
 }
 .ats-logo {
     font-size: 22px;
