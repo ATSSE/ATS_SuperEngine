@@ -113,10 +113,31 @@ _telegram_lock = threading.Lock()
 # ============================================================
 # VERSION HISTORY
 # ============================================================
-APP_VERSION  = "V5.5.2"
+APP_VERSION  = "V5.5.3"
 APP_UPDATED  = "01 Mei 2025"
 
 VERSION_HISTORY = [
+    {
+        "versi":   "V5.5.3",
+        "tanggal": "01 Mei 2025",
+        "tipe":    "Data-Driven Calibration",
+        "ringkasan": "2 kalibrasi targeted berbasis analisis CSV debug 93 ticker",
+        "detail": [
+            "[FIX A] RSI gate SIDEWAYS lower bound: 42 → 38",
+            "  Root cause: 26/28 saham gugur RSI di range 35-42 — bluechip syariah",
+            "  base recovery (TLKM 37.7, ICBP 34.7, MTEL 39.6, MYOR 39.8, dll)",
+            "  Risk: sistem buta total terhadap base recovery di sideways",
+            "  RSI 38 masih jauh dari true oversold (< 30) — aman untuk swing entry",
+            "[FIX B] Entry freshness untuk Breakout WAIT: 3.0% → 4.5%",
+            "  Root cause: 8 saham momentum kuat ditolak (TINS+6.4%, CPIN+4.2%,",
+            "  INDF+3.3%, MAPI+3.3%, ISAT+3.8%, ADMR+3.2%, PNLF+3.3%, SCMA+3.2%)",
+            "  Risk: selalu telat 1 hari di market gradual movement",
+            "  4.5% adalah balance: tidak FOMO (di bawah 5% WEAK), tidak terlalu strict",
+            "  Tetap ada hierarchy: WAIT 4.5 < WEAK 5.0 < WEAK+momentum 6.0 < VALID 7.0",
+            "Estimasi dampak: 0-3 kandidat di market sideways (sebelumnya 0 total)",
+            "Karakter sistem: tetap konservatif, tidak ada banjir kandidat",
+        ]
+    },
     {
         "versi":   "V5.5.2",
         "tanggal": "01 Mei 2025",
@@ -618,7 +639,10 @@ def rsi_gate(df: pd.DataFrame, regime: str = "SIDEWAYS") -> tuple[bool, float]:
     elif regime == "DISTRIBUTION":
         rsi_min, rsi_max = 40, 68   # Lebih ketat saat distribusi
     else:                            # SIDEWAYS / VOLATILE / unknown
-        rsi_min, rsi_max = 42, 72
+        # [V5.5.3 FIX A] Lower bound 42 → 38 berdasarkan analisis CSV debug:
+        # 26 dari 28 saham gugur RSI di range 35-42 (bluechip syariah base recovery,
+        # bukan true oversold). Range 38-72 lebih realistic untuk pasar IDX.
+        rsi_min, rsi_max = 38, 72
     return rsi_min <= rsi <= rsi_max, rsi
 
 # ============================================================
@@ -1675,20 +1699,24 @@ def scan_core(market: dict, balance: float, top_n: int = 5,
             # VALID breakout  → boleh sampai +7% (momentum kuat, masih layak masuk)
             # WEAK breakout   → boleh sampai +5%
             # Tanpa breakout  → maksimal +3% (entry sudah terlambat)
+            # [V5.5.3 FIX B] WAIT freshness 3.0 → 4.5 berdasarkan analisis CSV debug:
+            # 8 saham momentum kuat (TINS+6.4%, CPIN+4.2%, INDF+3.3%, dll) gugur padahal
+            # masih dalam zona reasonable entry. 4.5% adalah balance antara FOMO protection
+            # dan tidak melewatkan momentum gradual. Tetap < WEAK (5.0%) by design.
             strong_daily_momentum = momentum == 2 or ft == 2
             freshness_limit = (
                 9.0 if breakout == "VALID" and strong_daily_momentum else
                 7.0 if breakout == "VALID" else
                 6.0 if breakout == "WEAK" and strong_daily_momentum else
                 5.0 if breakout == "WEAK" else
-                3.0
+                4.5   # WAIT: 3.0 → 4.5
             )
             if chg_pct > freshness_limit:
                 debug_log.append({"Ticker": tkr_clean, "Sector": sector,
                     "RSI": round(rsi_value, 1), "EMA_OK": "✅" if ema_ok else "❌",
                     "Bandar": "-", "Breakout": breakout,
                     "Confluence": "-", "RR": round(rr, 1), "Score": "-",
-                    "❌ Gugur di": f"Entry expired: naik {chg_pct:.1f}% (batas {freshness_limit:.0f}% untuk breakout {breakout})"})
+                    "❌ Gugur di": f"Entry expired: naik {chg_pct:.1f}% (batas {freshness_limit:.1f}% untuk breakout {breakout})"})
                 continue
 
             # Filter 3: Bandar & Breakout
@@ -2274,12 +2302,16 @@ def mini_scan_spike(spike_candidates: list, regime: str = "SIDEWAYS"):
                 continue
 
             strong_daily_momentum = momentum == 2 or ft == 2
+            # [V5.5.3 FIX B] Sync dengan scan_core: WAIT 3.0 → 4.5
+            # (Note: di mini_scan_spike branch ini tidak tercapai karena
+            #  WAIT sudah di-skip di filter sebelumnya, tapi tetap di-update
+            #  untuk konsistensi behavioral kedua scanner)
             freshness_limit = (
                 9.0 if breakout == "VALID" and strong_daily_momentum else
                 7.0 if breakout == "VALID" else
                 6.0 if breakout == "WEAK" and strong_daily_momentum else
                 5.0 if breakout == "WEAK" else
-                3.0
+                4.5
             )
             if chg_pct > freshness_limit:
                 continue
