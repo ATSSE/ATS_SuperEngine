@@ -113,10 +113,26 @@ _telegram_lock = threading.Lock()
 # ============================================================
 # VERSION HISTORY
 # ============================================================
-APP_VERSION  = "V5.5.3"
+APP_VERSION  = "V5.6"
 APP_UPDATED  = "01 Mei 2025"
 
 VERSION_HISTORY = [
+    {
+        "versi":   "V5.6",
+        "tanggal": "01 Mei 2025",
+        "tipe":    "Auto-Backup Feature",
+        "ringkasan": "Auto-save scan log harian — analisis pattern tanpa manual download",
+        "detail": [
+            "Auto-save setiap scan ke folder scan_logs/YYYY-MM-DD/",
+            "Per scan tersimpan 3 file: debug_full, summary alasan gugur, candidates",
+            "Filename: HH-MM_label_REGIME (e.g. 09-05_pre_open_BULLISH_debug.csv)",
+            "Berlaku untuk manual scan + auto-scan 5x/hari",
+            "Tab Report: section 'Scan History' baru — pilih tanggal, download ZIP/file",
+            "Tombol 'Download Semua (ZIP)' untuk bulk download per hari",
+            "Auto cleanup: hapus folder > 30 hari setiap jam 16:00 WIB",
+            "Tidak mengganggu logic scan — purely append observability",
+        ]
+    },
     {
         "versi":   "V5.5.3",
         "tanggal": "01 Mei 2025",
@@ -1932,6 +1948,154 @@ def scan_core(market: dict, balance: float, top_n: int = 5,
 
     return scan_df, pd.DataFrame(debug_log), thresholds, regime, sector_df
 
+
+# ============================================================
+# [V5.6] AUTO SCAN LOG — backup otomatis hasil scan ke disk
+# ============================================================
+SCAN_LOG_DIR = "scan_logs"
+
+def save_scan_log(scan_df: pd.DataFrame, debug_df: pd.DataFrame,
+                  regime: str, scan_label: str = "manual") -> dict:
+    """
+    Auto-save hasil scan ke folder scan_logs/YYYY-MM-DD/.
+    Disimpan: full debug log, summary alasan gugur, kandidat (jika ada).
+
+    Args:
+        scan_df:    DataFrame kandidat yang lolos
+        debug_df:   DataFrame full debug log
+        regime:     Market regime saat scan
+        scan_label: Label scan (e.g. "Pre-Open", "manual", "Mid Sesi 1")
+
+    Returns:
+        dict info file yang berhasil disimpan
+    """
+    result = {"saved": [], "errors": [], "dir": None}
+    try:
+        now    = datetime.now(WIB)
+        date_dir = now.strftime("%Y-%m-%d")
+        time_str = now.strftime("%H-%M")
+        clean_label = scan_label.replace(" ", "_").replace("/", "_").lower()
+        regime_str  = regime.upper() if regime else "UNKNOWN"
+
+        # Buat folder kalau belum ada
+        full_dir = os.path.join(SCAN_LOG_DIR, date_dir)
+        os.makedirs(full_dir, exist_ok=True)
+        result["dir"] = full_dir
+
+        base_name = f"{time_str}_{clean_label}_{regime_str}"
+
+        # 1. Full debug log
+        if debug_df is not None and not debug_df.empty:
+            f1 = os.path.join(full_dir, f"{base_name}_debug.csv")
+            debug_df.to_csv(f1, index=False)
+            result["saved"].append(f1)
+
+            # 2. Summary alasan gugur
+            try:
+                gugur_only = debug_df[debug_df["❌ Gugur di"] != "✅ LOLOS — masuk kandidat"]
+                if not gugur_only.empty:
+                    summary = (gugur_only["❌ Gugur di"]
+                              .str.extract(r"^([^(|]+)")[0]
+                              .str.strip()
+                              .value_counts()
+                              .reset_index())
+                    summary.columns = ["Alasan_Gugur", "Jumlah_Ticker"]
+                    f2 = os.path.join(full_dir, f"{base_name}_summary.csv")
+                    summary.to_csv(f2, index=False)
+                    result["saved"].append(f2)
+            except Exception as e:
+                result["errors"].append(f"summary: {e}")
+
+        # 3. Kandidat yang lolos (kalau ada)
+        if scan_df is not None and not scan_df.empty:
+            f3 = os.path.join(full_dir, f"{base_name}_candidates.csv")
+            # Hilangkan kolom ScoreBreakdown (tidak compatible dengan CSV langsung)
+            df_save = scan_df.copy()
+            if "ScoreBreakdown" in df_save.columns:
+                df_save = df_save.drop(columns=["ScoreBreakdown"])
+            df_save.to_csv(f3, index=False)
+            result["saved"].append(f3)
+
+        LOG.info(f"save_scan_log OK — {len(result['saved'])} file → {full_dir}")
+        return result
+
+    except Exception as e:
+        LOG.error(f"save_scan_log FAILED: {type(e).__name__}: {e}")
+        result["errors"].append(str(e))
+        return result
+
+
+def cleanup_old_scan_logs(days_to_keep: int = 30):
+    """
+    Hapus folder scan_logs/YYYY-MM-DD/ yang lebih dari N hari.
+    Dipanggil sekali per hari untuk hemat disk.
+    """
+    try:
+        if not os.path.isdir(SCAN_LOG_DIR):
+            return
+        cutoff = (datetime.now(WIB).date() - timedelta(days=days_to_keep))
+        deleted = 0
+        for entry in os.listdir(SCAN_LOG_DIR):
+            full_path = os.path.join(SCAN_LOG_DIR, entry)
+            if not os.path.isdir(full_path):
+                continue
+            try:
+                folder_date = datetime.strptime(entry, "%Y-%m-%d").date()
+                if folder_date < cutoff:
+                    import shutil
+                    shutil.rmtree(full_path)
+                    deleted += 1
+            except (ValueError, OSError):
+                continue
+        if deleted > 0:
+            LOG.info(f"cleanup_old_scan_logs: {deleted} folder lama dihapus (> {days_to_keep} hari)")
+    except Exception as e:
+        LOG.warning(f"cleanup_old_scan_logs error: {e}")
+
+
+def list_scan_log_dates() -> list:
+    """Return list of dates yang punya scan log, sorted descending."""
+    if not os.path.isdir(SCAN_LOG_DIR):
+        return []
+    dates = []
+    for entry in os.listdir(SCAN_LOG_DIR):
+        full_path = os.path.join(SCAN_LOG_DIR, entry)
+        if os.path.isdir(full_path):
+            try:
+                datetime.strptime(entry, "%Y-%m-%d")
+                dates.append(entry)
+            except ValueError:
+                continue
+    return sorted(dates, reverse=True)
+
+
+def get_scan_log_files(date_str: str) -> list:
+    """Return list of files dalam folder scan_logs/date_str/."""
+    full_dir = os.path.join(SCAN_LOG_DIR, date_str)
+    if not os.path.isdir(full_dir):
+        return []
+    return sorted([f for f in os.listdir(full_dir) if f.endswith('.csv')])
+
+
+def create_zip_for_date(date_str: str) -> bytes | None:
+    """Bundle semua CSV di folder tanggal tertentu jadi ZIP bytes."""
+    import io
+    import zipfile
+
+    full_dir = os.path.join(SCAN_LOG_DIR, date_str)
+    if not os.path.isdir(full_dir):
+        return None
+    files = [f for f in os.listdir(full_dir) if f.endswith('.csv')]
+    if not files:
+        return None
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for f in files:
+            full_path = os.path.join(full_dir, f)
+            zf.write(full_path, arcname=f)
+    return buf.getvalue()
+
 # ============================================================
 # RUN SCANNER (UI) — [F1] pakai scan_core
 # ============================================================
@@ -1973,6 +2137,12 @@ def run_scanner():
 
     # Build heatmap dari market yang sudah diupdate intraday
     st.session_state.heatmap_data = build_heatmap_data(market)
+
+    # [V5.6] Auto-save scan log ke disk
+    try:
+        save_scan_log(scan_df, debug_df, regime, scan_label="manual")
+    except Exception as e:
+        LOG.warning(f"auto-save scan log gagal (manual): {e}")
 
     if scan_df.empty:
         return
@@ -2053,9 +2223,21 @@ def auto_scan_background():
         sig_lock = _state.get("signal_lock", {})
 
         # [B1] scan_core sekarang return 5-tuple termasuk sector_df
-        scan_df, _, thresholds, regime, _ = scan_core(
+        scan_df, debug_df, thresholds, regime, _ = scan_core(
             market, balance, top_n=5, show_progress=False
         )
+
+        # [V5.6] Auto-save scan log — cari label dari SCAN_SCHEDULE
+        try:
+            now_wib = datetime.now(WIB)
+            cur_label = "auto_scan"
+            for sched in SCAN_SCHEDULE:
+                if sched["hour"] == now_wib.hour and abs(sched["minute"] - now_wib.minute) <= 5:
+                    cur_label = sched["label"]
+                    break
+            save_scan_log(scan_df, debug_df, regime, scan_label=cur_label)
+        except Exception as e:
+            LOG.warning(f"auto-save scan log gagal (autoscan): {e}")
 
         if scan_df.empty:
             send_telegram(
@@ -2423,6 +2605,16 @@ def start_scheduler():
         name="ATS Intraday Refresh 15min",
         replace_existing=True,
         misfire_grace_time=60,
+    )
+
+    # [V5.6] Cleanup scan logs lama setiap hari jam 16:00 WIB
+    scheduler.add_job(
+        func=lambda: cleanup_old_scan_logs(days_to_keep=30),
+        trigger=CronTrigger(hour=16, minute=0, timezone=WIB),
+        id="cleanup_scan_logs",
+        name="ATS Cleanup Scan Logs > 30 hari",
+        replace_existing=True,
+        misfire_grace_time=300,
     )
 
     scheduler.start()
@@ -3385,6 +3577,64 @@ with tabs[2]:
 # TAB 3 — REPORT
 # ─────────────────────────────────────────────────────────────
 with tabs[3]:
+    # ── [V5.6] Scan History — auto-saved logs ──────────────
+    st.subheader("📂 Scan History — Auto-Backup Log")
+    st.caption(
+        "Setiap scan otomatis ter-backup ke disk. "
+        "Download per-hari (ZIP) atau per-file untuk analisis offline."
+    )
+
+    available_dates = list_scan_log_dates()
+    if not available_dates:
+        st.info("Belum ada scan log tersimpan. Jalankan scan dulu untuk mulai mengumpulkan data.")
+    else:
+        sh_col1, sh_col2 = st.columns([1, 3])
+        with sh_col1:
+            selected_date = st.selectbox(
+                "Pilih tanggal", available_dates,
+                format_func=lambda d: f"📅 {d}",
+                key="scan_history_date"
+            )
+        with sh_col2:
+            files = get_scan_log_files(selected_date)
+            st.caption(f"**{len(files)} file** tersimpan untuk tanggal {selected_date}")
+
+        # Tombol download ZIP semua file di tanggal ini
+        if files:
+            try:
+                zip_bytes = create_zip_for_date(selected_date)
+                if zip_bytes:
+                    st.download_button(
+                        label=f"📦 Download Semua ({len(files)} file) — {selected_date}.zip",
+                        data=zip_bytes,
+                        file_name=f"ats_scan_logs_{selected_date}.zip",
+                        mime="application/zip",
+                        use_container_width=True,
+                    )
+            except Exception as e:
+                st.warning(f"ZIP error: {e}")
+
+            # Daftar file individual
+            with st.expander(f"📄 Daftar {len(files)} file individual", expanded=False):
+                for fname in files:
+                    full_path = os.path.join(SCAN_LOG_DIR, selected_date, fname)
+                    try:
+                        with open(full_path, "rb") as f:
+                            file_bytes = f.read()
+                        size_kb = len(file_bytes) / 1024
+                        col_a, col_b = st.columns([3, 1])
+                        with col_a:
+                            st.text(f"  {fname}  ({size_kb:.1f} KB)")
+                        with col_b:
+                            st.download_button(
+                                label="⬇️", data=file_bytes,
+                                file_name=fname, mime="text/csv",
+                                key=f"dl_{selected_date}_{fname}"
+                            )
+                    except Exception:
+                        continue
+
+    st.markdown("---")
     st.subheader("📋 Trade Journal")
 
     # [I4] Validasi kolom wajib
