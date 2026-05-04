@@ -113,10 +113,24 @@ _telegram_lock = threading.Lock()
 # ============================================================
 # VERSION HISTORY
 # ============================================================
-APP_VERSION  = "V5.5.1"
-APP_UPDATED  = "30 Apr 2025"
+APP_VERSION  = "V5.5.2"
+APP_UPDATED  = "01 Mei 2025"
 
 VERSION_HISTORY = [
+    {
+        "versi":   "V5.5.2",
+        "tanggal": "01 Mei 2025",
+        "tipe":    "UX Enhancement",
+        "ringkasan": "Download CSV untuk Scan Debug — analisis offline tanpa screenshot",
+        "detail": [
+            "Tombol '📥 Download Full Debug Log (CSV)' — semua ticker + alasan gugur",
+            "Tombol '📊 Download Summary Gugur (CSV)' — distribusi alasan gugur",
+            "Tombol download untuk hasil filter — kalau user filter sektor/status",
+            "Filename otomatis: ats_debug_full_YYYYMMDD_HHMM_REGIME.csv",
+            "Memudahkan analisis offline dan share log untuk audit",
+            "Tidak ada perubahan logic scan — purely visibility enhancement",
+        ]
+    },
     {
         "versi":   "V5.5.1",
         "tanggal": "30 Apr 2025",
@@ -3213,6 +3227,36 @@ with tabs[1]:
                 f"Lolos: **{(debug_df['❌ Gugur di'] == '✅ LOLOS — masuk kandidat').sum()}** | "
                 f"Gugur: **{(debug_df['❌ Gugur di'] != '✅ LOLOS — masuk kandidat').sum()}**"
             )
+
+            # ── [NEW] Tombol download CSV — full debug log ───
+            try:
+                csv_full    = debug_df.to_csv(index=False).encode("utf-8")
+                csv_summary = gugur_counts.to_csv(index=False).encode("utf-8")
+                ts_str      = datetime.now(WIB).strftime("%Y%m%d_%H%M")
+                regime_str  = st.session_state.get("last_regime", "-")
+
+                dl_c1, dl_c2 = st.columns(2)
+                with dl_c1:
+                    st.download_button(
+                        label="📥 Download Full Debug Log (CSV)",
+                        data=csv_full,
+                        file_name=f"ats_debug_full_{ts_str}_{regime_str}.csv",
+                        mime="text/csv",
+                        use_container_width=True,
+                        help="Semua ticker dengan alasan gugur lengkap — untuk analisis offline",
+                    )
+                with dl_c2:
+                    st.download_button(
+                        label="📊 Download Summary Gugur (CSV)",
+                        data=csv_summary,
+                        file_name=f"ats_debug_summary_{ts_str}_{regime_str}.csv",
+                        mime="text/csv",
+                        use_container_width=True,
+                        help="Distribusi alasan gugur per kategori",
+                    )
+            except Exception as e:
+                LOG.warning(f"download_button error: {type(e).__name__}: {e}")
+
             if not gugur_counts.empty:
                 fig_d = px.bar(gugur_counts, x="Jumlah Ticker", y="Alasan Gugur",
                                orientation="h", color="Jumlah Ticker",
@@ -3236,6 +3280,24 @@ with tabs[1]:
                 filtered = filtered[filtered["❌ Gugur di"] == "✅ LOLOS — masuk kandidat"]
             elif filter_status == "❌ Gugur":
                 filtered = filtered[filtered["❌ Gugur di"] != "✅ LOLOS — masuk kandidat"]
+
+            # Tombol download untuk hasil filter (kalau user filter)
+            if filter_sektor != "Semua" or filter_status != "Semua":
+                try:
+                    csv_filtered = filtered.to_csv(index=False).encode("utf-8")
+                    suffix = []
+                    if filter_sektor != "Semua": suffix.append(filter_sektor)
+                    if filter_status != "Semua": suffix.append(filter_status.replace("✅ ","").replace("❌ ",""))
+                    suffix_str = "_".join(suffix) if suffix else "filtered"
+                    st.download_button(
+                        label=f"📥 Download Filtered CSV ({len(filtered)} rows)",
+                        data=csv_filtered,
+                        file_name=f"ats_debug_{suffix_str}_{ts_str}.csv",
+                        mime="text/csv",
+                        help="Hanya hasil filter yang sedang ditampilkan",
+                    )
+                except Exception:
+                    pass
 
             def color_rows(row):
                 if row["❌ Gugur di"] == "✅ LOLOS — masuk kandidat":
