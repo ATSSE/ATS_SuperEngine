@@ -1,25 +1,8 @@
 import pandas as pd
-
-
-def liquidity_trap(df):
-
-    close = df["Close"]
-    low = df["Low"]
-    vol = df["Volume"]
-
-    last = close.iloc[-1]
-    prev = close.iloc[-2]
-
-    last_low = low.iloc[-1]
-    low5 = low.iloc[:-1].tail(5).min()
-
-    avg_vol = vol.tail(20).mean()
-    last_vol = vol.iloc[-1]
-
-    if last_low < low5 and last > prev and last_vol > avg_vol * 1.5:
-        return True
-
-    return False
+# [FIX] Hapus duplikat liquidity_trap() — gunakan single source of truth dari liquidity_engine
+# Sebelumnya: dua implementasi berjalan independen (probability_engine vs liquidity_engine)
+# Sekarang: satu implementasi, konsisten di seluruh pipeline
+from engine.liquidity_engine import liquidity_trap
 
 
 def runner_probability(df):

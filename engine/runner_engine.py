@@ -8,8 +8,11 @@ def runner_prediction(df):
 
     last = close.iloc[-1]
 
-    ma20 = close.tail(20).mean()
-    ma50 = close.tail(50).mean()
+    # [FIX] SMA → EMA — konsisten dengan dashboard.py yang pakai ewm di seluruh pipeline
+    # Sebelumnya: close.tail(20).mean() / close.tail(50).mean() → SMA biasa
+    # Sekarang: ewm(span=20/50) → saham yang "di atas EMA" di dashboard = sama di sini
+    ma20 = float(close.ewm(span=20, adjust=False).mean().iloc[-1])
+    ma50 = float(close.ewm(span=50, adjust=False).mean().iloc[-1])
 
     avg_vol = vol.tail(20).mean()
     last_vol = vol.iloc[-1]
