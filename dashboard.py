@@ -113,10 +113,30 @@ _telegram_lock = threading.Lock()
 # ============================================================
 # VERSION HISTORY
 # ============================================================
-APP_VERSION  = "V5.6.1"
+APP_VERSION  = "V5.6.2"
 APP_UPDATED  = "01 Mei 2025"
 
 VERSION_HISTORY = [
+    {
+        "versi":   "V5.6.2",
+        "tanggal": "05 Mei 2025",
+        "tipe":    "Bug Fix — Stabilization",
+        "ringkasan": "4 surgical bug fixes: scoring consistency, liquidity filter sync, atomic state write, starvation logic",
+        "detail": [
+            "[FIX #1] mini_scan_spike: scoring sekarang regime-aware via get_adaptive_weights()",
+            "  Sebelumnya: calculate_score tanpa regime — default SIDEWAYS selamanya",
+            "  Sekarang: pass spike_regime + ada_weights — konsisten dengan scan_core",
+            "[FIX #2] auto_scan_background: tambah MIN_DAILY_VOLUME_IDR filter",
+            "  Sebelumnya: saham illiquid bisa lolos auto-scan tapi tidak lolos manual scan",
+            "  Sekarang: universe identik antara auto-scan dan manual scan UI",
+            "[FIX #3] auto_scan_background: signal_lock write sekarang atomic",
+            "  Sebelumnya: bare open('w') — race condition dengan UI thread save_state()",
+            "  Sekarang: _state_lock + os.replace — zero corruption risk",
+            "[FIX #4] check_opportunity_starvation: TIGHT loosen flag diset False",
+            "  Sebelumnya: loosen=True di TIGHT tapi tidak pernah di-honor di scan_core",
+            "  Sekarang: loosen=False — API return value konsisten dengan behavior",
+        ]
+    },
     {
         "versi":   "V5.6.1",
         "tanggal": "01 Mei 2025",
