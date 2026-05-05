@@ -1007,8 +1007,9 @@ def check_opportunity_starvation(debug_log: list, n_universe: int) -> dict:
         status = "STARVATION"    # tidak ada kandidat sama sekali
         loosen = True
     elif pct_lolos < 2:
-        status = "TIGHT"         # sangat sedikit kandidat
-        loosen = True
+        status = "TIGHT"         # sangat sedikit kandidat — monitor, jangan longgarkan
+        loosen = False           # [FIX #4] threshold loosening hanya untuk true STARVATION (0 kandidat)
+                                 # TIGHT = kondisi selektif valid, bukan alasan longgarkan filter
     elif pct_lolos < 5:
         status = "SELECTIVE"     # cukup selektif, normal
     else:
@@ -2220,8 +2221,15 @@ def auto_scan_background():
             try:
                 df = raw[s].dropna()
                 if len(df) < 60: continue
-                if df["Close"].squeeze().iloc[-1] <= 0: continue
+                last_close = float(df["Close"].squeeze().iloc[-1])
+                if last_close <= 0: continue
                 if df["Volume"].squeeze().tail(5).mean() <= 0: continue
+                # [FIX #2] Sync dengan load_market(): filter likuiditas min Rp 500 juta/hari
+                # Tanpa ini, saham illiquid bisa lolos auto-scan tapi tidak lolos manual scan
+                avg_vol_20    = float(df["Volume"].squeeze().tail(20).mean())
+                est_daily_idr = last_close * avg_vol_20 * 100
+                if est_daily_idr < MIN_DAILY_VOLUME_IDR:
+                    continue
                 market[s] = df
             except Exception:
                 continue
@@ -2291,15 +2299,25 @@ def auto_scan_background():
                 f"Belum ada sinyal EXECUTE (score belum cukup / lock period)."
             )
 
-        # Update signal lock
+        # [FIX #3] Update signal lock — atomic write via _state_lock + os.replace
+        # Sebelumnya: non-atomic open("w") bisa timpa state dari UI thread (race condition)
+        # Sekarang: pakai pola yang sama dengan save_state() — read-modify-write atomic
         try:
-            with open(STATE_FILE, "r") as f:
-                st_data = json.load(f)
-        except Exception:
-            st_data = {}
-        st_data["signal_lock"] = sig_lock
-        with open(STATE_FILE, "w") as f:
-            json.dump(st_data, f, indent=2)
+            with _state_lock:
+                try:
+                    with open(STATE_FILE, "r") as f:
+                        st_data = json.load(f)
+                except Exception:
+                    st_data = {}
+                st_data["signal_lock"] = sig_lock
+                tmp_path = STATE_FILE + ".tmp_bg"
+                with open(tmp_path, "w", encoding="utf-8") as f:
+                    json.dump(st_data, f, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, STATE_FILE)
+        except Exception as e:
+            LOG.error(f"auto_scan signal_lock write FAILED: {type(e).__name__}: {e}")
 
     except Exception as e:
         send_telegram(f"❌ ATS AutoScan ERROR: {str(e)[:200]}")
@@ -2475,6 +2493,9 @@ def mini_scan_spike(spike_candidates: list, regime: str = "SIDEWAYS"):
             # Jalankan pipeline scoring
             _state       = load_state()
             balance      = _state.get("balance", 800_000)
+            # [FIX #1] Baca regime dari state — sudah tersedia sebagai parameter fungsi ini
+            # Gunakan untuk adaptive weights agar konsisten dengan scan_core
+            spike_regime = regime   # parameter fungsi mini_scan_spike sudah bawa regime
             sector       = get_sector(tkr_jk)
             rsi_ok, rsi_value = rsi_gate(df_daily, regime)
             if not rsi_ok:
@@ -2538,8 +2559,15 @@ def mini_scan_spike(spike_candidates: list, regime: str = "SIDEWAYS"):
             if not conf_passed:
                 continue
 
-            score  = calculate_score(prob, runner, quality, rr, liq_str, bandar)
-            score += momentum*0.8 + accum*0.9 + ft*0.7 + intraday*0.5
+            # [FIX #1] Scoring regime-aware — konsisten dengan scan_core
+            # Sebelumnya: calculate_score tanpa regime (default SIDEWAYS) + hardcoded multipliers
+            # Sekarang: pass spike_regime ke calculate_score + pakai ada_weights untuk bonus
+            ada_w  = get_adaptive_weights(spike_regime)
+            score  = calculate_score(prob, runner, quality, rr, liq_str, bandar, spike_regime)
+            score += (momentum * 0.8 * ada_w["momentum_w"] +
+                      accum    * 0.9 * ada_w["accum_w"]    +
+                      ft       * 0.7 * ada_w["ft_w"]       +
+                      intraday * 0.5 * ada_w["intraday_w"])
             if momentum == 2:               score = min(100, score + 1)
             if ft == 2:                     score = min(100, score + 1)
             if last_price > ema_val * 1.01: score = min(100, score + 1)
