@@ -688,7 +688,7 @@ def calculate_rsi(df: pd.DataFrame, period: int = 14) -> float:
 def rsi_gate(df: pd.DataFrame, regime: str = "SIDEWAYS") -> tuple[bool, float]:
     rsi = calculate_rsi(df)
     if regime == "BULLISH":
-        rsi_min, rsi_max = 45, 78   # Lebih toleran overbought saat bullish
+        rsi_min, rsi_max = 42, 78   # Lebih toleran overbought saat bullish
     elif regime == "DISTRIBUTION":
         rsi_min, rsi_max = 40, 68   # Lebih ketat saat distribusi
     else:                            # SIDEWAYS / VOLATILE / unknown
