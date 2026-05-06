@@ -113,10 +113,25 @@ _telegram_lock = threading.Lock()
 # ============================================================
 # VERSION HISTORY
 # ============================================================
-APP_VERSION  = "V5.6.2"
-APP_UPDATED  = "01 Mei 2025"
+APP_VERSION  = "V5.6.3"
+APP_UPDATED  = "06 Mei 2026"
 
 VERSION_HISTORY = [
+    {
+        "versi":   "V5.6.3",
+        "tanggal": "06 Mei 2026",
+        "tipe":    "Filter Calibration — Signal Drought Fix",
+        "ringkasan": "Pisah bandar dari hard gate + WEAK breakout threshold turun 0.8→0.6 untuk atasi 1 bulan zero signal",
+        "detail": [
+            "[FIX #1] breakout_confirmation: WEAK vol threshold 0.8 → 0.6",
+            "  Sebelumnya: akumulasi diam-diam (vol 0.6-0.8x avg) tidak terdeteksi sebagai WEAK",
+            "  Sekarang: threshold lebih rendah menangkap pola accumulation sebelum breakout penuh",
+            "[FIX #2] scan_core: bandar dipisah dari hard gate — breakout WAIT saja yang jadi blocker",
+            "  Sebelumnya: bandar < 2 OR breakout WAIT → dual hard gate, berkorelasi tinggi → 0 signal",
+            "  Sekarang: bandar tetap masuk confluence (1/6) + scoring, bukan mandatory blocker",
+            "[FIX #3] mini_scan_spike: konsisten dengan scan_core — bandar bukan hard gate",
+        ]
+    },
     {
         "versi":   "V5.6.2",
         "tanggal": "05 Mei 2025",
