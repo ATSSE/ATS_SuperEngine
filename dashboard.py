@@ -859,7 +859,7 @@ def breakout_confirmation(df: pd.DataFrame) -> str:
     near_breakout = last >= recent_high * 0.99 and change_pct > 0
     if breakout and vol_ratio > 1.3:
         return "VALID"
-    if near_breakout and vol_ratio >= 0.8:
+    if near_breakout and vol_ratio >= 0.6:   # [V5.6.3] 0.8 → 0.6: akumulasi diam-diam valid
         return "WEAK"
     return "WAIT"
 
@@ -1773,16 +1773,16 @@ def scan_core(market: dict, balance: float, top_n: int = 5,
                     "❌ Gugur di": f"Entry expired: naik {chg_pct:.1f}% (batas {freshness_limit:.1f}% untuk breakout {breakout})"})
                 continue
 
-            # Filter 3: Bandar & Breakout
-            if bandar < 2 or breakout == "WAIT":
-                reason = []
-                if bandar < 2:         reason.append(f"Bandar rendah ({bandar})")
-                if breakout == "WAIT": reason.append("Breakout WAIT")
+            # Filter 3: Breakout gate — [V5.6.3] Bandar dipisah dari hard gate.
+            # Bandar tetap masuk confluence (1/6) + scoring, tapi bukan blocker mandatory.
+            # Root cause: bandar & breakout berkorelasi tinggi → dual hard gate → 0 signal
+            # selama pasar konsolidasi/akumulasi. Fix: hanya breakout yg jadi hard gate.
+            if breakout == "WAIT":
                 debug_log.append({"Ticker": tkr_clean, "Sector": sector,
                     "RSI": round(rsi_value, 1), "EMA_OK": "✅" if ema_ok else "❌",
                     "Bandar": bandar, "Breakout": breakout,
                     "Confluence": "-", "RR": round(rr, 1), "Score": "-",
-                    "❌ Gugur di": " | ".join(reason)})
+                    "❌ Gugur di": "Breakout WAIT"})
                 continue
 
             intraday = intraday_confirm(ticker)
@@ -2538,7 +2538,7 @@ def mini_scan_spike(spike_candidates: list, regime: str = "SIDEWAYS"):
             ft       = follow_through(df_daily)
             chg_pct  = daily_change_pct(df_daily)
 
-            if bandar < 2 or breakout == "WAIT":
+            if breakout == "WAIT":   # [V5.6.3] Bandar bukan hard gate — konsisten dengan scan_core
                 continue
 
             strong_daily_momentum = momentum == 2 or ft == 2
