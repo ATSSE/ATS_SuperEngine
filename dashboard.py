@@ -1248,9 +1248,10 @@ def _load_persistent_state():
 
 if "state_loaded" not in st.session_state:
     _state = _load_persistent_state()
-    st.session_state.cybernetic_params = _state.get("cybernetic_params", DEFAULT_CYBER.copy())
+    st.session_state.cybernetic_params = _state.get("cybernetic_params", ...)
     st.session_state.signal_lock       = _state.get("signal_lock", {})
-    st.session_state.balance           = _state.get("balance", 800_000)  # [I5]
+    st.session_state.balance           = _state.get("balance", 800_000)
+    st.session_state.last_regime       = _state.get("last_regime", "-")  # ← ini yang ditambah
     st.session_state.state_loaded      = True
 
 if "active_trades"      not in st.session_state:
