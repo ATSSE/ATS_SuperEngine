@@ -1578,6 +1578,44 @@ def build_technical_context(df: pd.DataFrame) -> dict:
         return {"ok": False}
 
 
+def notify_regime_change(prev: str, curr: str) -> None:
+    """
+    Kirim Telegram alert jika regime pasar berubah.
+    Dipanggil dari run_scanner() dan auto_scan_background().
+    Guard: tidak kirim jika prev kosong/belum ada, atau sama dengan curr.
+    """
+    if not prev or prev in ("-", "") or prev == curr:
+        return
+
+    emoji_map = {
+        "BULLISH":      "🟢",
+        "SIDEWAYS":     "🟡",
+        "DISTRIBUTION": "🔴",
+        "VOLATILE":     "⚡",
+    }
+    action_map = {
+        "BULLISH":      "Scanner aktif — setup valid mulai dicari. Perketat position sizing.",
+        "SIDEWAYS":     "Filter moderat — selektif, tunggu konfirmasi sebelum entry.",
+        "DISTRIBUTION": "Market distribusi — scanner defensif. Sinyal ditekan, hindari buy baru.",
+        "VOLATILE":     "Volatilitas tinggi — position sizing sangat ketat, SL wajib.",
+    }
+
+    e_prev   = emoji_map.get(prev, "⬜")
+    e_curr   = emoji_map.get(curr, "⬜")
+    guidance = action_map.get(curr, "Monitor kondisi market.")
+    ts       = datetime.now(WIB).strftime("%d %b %Y %H:%M WIB")
+
+    msg = (
+        f"🔄 *REGIME CHANGE*\n"
+        f"{'─' * 28}\n"
+        f"{e_prev} {prev}  →  {e_curr} {curr}\n"
+        f"⏰ {ts}\n\n"
+        f"📌 {guidance}"
+    )
+    send_telegram(msg)
+    LOG.info(f"REGIME CHANGE: {prev} → {curr}")
+
+
 def format_telegram_signal(row: dict, regime: str, market: dict) -> str:
     """
     [P1] Build Telegram message yang kaya konteks teknikal.
@@ -2177,10 +2215,12 @@ def run_scanner():
                                st.session_state.get("last_regime", "-"))
 
     # [K6] scan_core handle sector_momentum sekaligus — tidak duplikat
+    prev_regime = st.session_state.get("last_regime", "-")
     scan_df, debug_df, thresholds, regime, sector_df = scan_core(
         market, st.session_state.balance,
         top_n=TOP_N_RESULTS, show_progress=True
     )
+    notify_regime_change(prev_regime, regime)   # alert jika regime berubah
 
     st.session_state.last_regime        = regime
     st.session_state.dynamic_thresholds = thresholds
@@ -2284,9 +2324,11 @@ def auto_scan_background():
         sig_lock = _state.get("signal_lock", {})
 
         # [B1] scan_core sekarang return 5-tuple termasuk sector_df
+        prev_regime_bg = _state.get("last_regime", "-")
         scan_df, debug_df, thresholds, regime, _ = scan_core(
             market, balance, top_n=5, show_progress=False
         )
+        notify_regime_change(prev_regime_bg, regime)   # alert jika regime berubah
 
         # [V5.6] Auto-save scan log — cari label dari SCAN_SCHEDULE
         try:
@@ -2346,6 +2388,7 @@ def auto_scan_background():
                 except Exception:
                     st_data = {}
                 st_data["signal_lock"] = sig_lock
+                st_data["last_regime"] = regime   # persist regime dari background scan
                 tmp_path = STATE_FILE + ".tmp_bg"
                 with open(tmp_path, "w", encoding="utf-8") as f:
                     json.dump(st_data, f, indent=2)
@@ -3046,7 +3089,7 @@ header_html = (
 
 st.markdown(header_html, unsafe_allow_html=True)
 
-tabs = st.tabs(["📖 HOW TO USE", "📊 TRADING DESK", "💼 ACCOUNT", "📋 REPORT", "🕌 ISSI CHECK", "🔬 DEEP ANALYSIS"])
+tabs = st.tabs(["📖 HOW TO USE", "📊 TRADING DESK", "💼 ACCOUNT", "📋 REPORT", "🕌 ISSI CHECK", "🔬 DEEP ANALYSIS", "🦅 FALCON HUNTER"])
 
 # ─────────────────────────────────────────────────────────────
 # TAB 0 — HOW TO USE
@@ -3263,6 +3306,221 @@ Klik **💾 Save Journal** setelah selesai mengisi.
         "Bukan rekomendasi investasi — selalu lakukan riset mandiri | "
         "Gunakan dengan manajemen risiko yang ketat 🤲"
     )
+
+    # FALCON HUNTER SECTION
+    # ─────────────────────────────────────────────────────────
+    st.markdown("## 🦅 Panduan Falcon Hunter")
+    st.info(
+        "**Falcon Hunter** adalah scanner saham syariah kedua yang berjalan **terpisah dari ATS**. "
+        "Filosofinya berbeda: Falcon mendeteksi dua jenis setup spesifik — **Breakout** dan **Bounce** — "
+        "dengan target profit harian ≥1% di H+1. Engine-nya independen, tidak mempengaruhi scanner ATS."
+    )
+
+    st.markdown("### 🦅 Filosofi Falcon")
+    st.markdown(
+        "> *Berburu seperti elang — sabar mengamati, presisi saat menyergap, "
+        "cepat keluar saat target tercapai atau salah baca situasi. FOMO adalah racun elang.*"
+    )
+
+    # Dua mode setup
+    st.markdown("### 🎯 Dua Mode Setup Falcon")
+    fc1, fc2 = st.columns(2)
+    with fc1:
+        st.success("""
+**🟢 BREAKOUT — Menyergap mangsa yang lari**
+
+- Close **menembus resistance 10 hari** terakhir
+- Volume **> 1.8× rata-rata** 20 hari (buyer agresif)
+- Candle bullish — close dekat high
+- Trend di atas MA20 / MA50 / MA200
+        """)
+    with fc2:
+        st.info("""
+**🔵 BOUNCE — Menunggu mangsa di sarang**
+
+- Close **pantul dari support 20 hari** (jarak ≤ 4%)
+- Volume **sepi < 0.85×** rata-rata (akumulasi diam-diam)
+- Close > prev close (konfirmasi pantulan)
+- Identifikasi akumulasi institusi
+        """)
+
+    st.markdown("### 🔒 Filter Wajib (Kedua Setup Harus Lolos)")
+    ff1, ff2 = st.columns(2)
+    with ff1:
+        st.markdown("""
+| Filter | Nilai |
+|---|---|
+| Upper shadow candle | ≤ 25% range |
+| Body candle | ≥ 50% range |
+| RSI(14) | ≤ 70 (hindari overbought) |
+        """)
+    with ff2:
+        st.markdown("""
+| Filter | Nilai |
+|---|---|
+| Gap pembukaan | ≤ 3% (hindari kejar pump) |
+| Trend struktur | Di atas MA20/50/200 |
+| IHSG status | Tidak bearish |
+        """)
+
+    # IHSG Decision matrix
+    st.markdown("### 🌐 Decision Matrix IHSG")
+    ih1, ih2, ih3 = st.columns(3)
+    ih1.success("**🟢 BULLISH**\n\nIHSG > MA20 & MA50\n\nFull size, scan agresif, target normal")
+    ih2.warning("**🟡 NEUTRAL**\n\nIHSG salah satu di atas\n\nSize ½ — hanya pick Falcon Score terbaik")
+    ih3.error("**🔴 BEARISH**\n\nIHSG di bawah MA20 & MA50\n\n🛑 Falcon istirahat — paper trade only")
+
+    # Risk management
+    st.markdown("### 💰 Manajemen Risiko Falcon")
+    st.markdown("---")
+    rm1, rm2 = st.columns(2)
+    with rm1:
+        st.markdown("""
+**📐 Position Sizing:**
+```
+Risk per trade  = Modal × 1%
+Lot             = Risk / (Entry - SL) / 100
+Max posisi      = 3 terbuka simultan
+Max per saham   = 5% modal
+Max total       = 30% modal
+```
+
+**🛑 Stop Loss Formula:**
+```
+SL = max(swing low 5 hari × 0.995,
+         entry - 1.5 × ATR14)
+Hard stop di broker — BUKAN mental stop
+```
+        """)
+    with rm2:
+        st.markdown("""
+**🎯 Target & Exit:**
+```
+T1 = Entry + 1R  → sell 50%, geser SL ke breakeven
+T2 = Entry + 2R  → sell sisa atau trailing
+Trailing         = SL di low 3 hari terakhir
+Time stop        = maksimal hold 5 hari
+```
+
+**📊 Gap Management:**
+```
+Gap up ≤ 1%    → entry sesuai plan ✅
+Gap up 1–2%   → tunggu pullback ⏸
+Gap up > 2%   → SKIP — R:R rusak ❌
+Gap down ≤ 1% → opportunity bagus 🎯
+Gap down > 2% → re-evaluate 🔍
+```
+        """)
+
+    # Rutinitas harian Falcon
+    st.markdown("### 📅 Rutinitas Harian Falcon")
+    st.markdown("---")
+    fd1, fd2, fd3 = st.columns(3)
+    with fd1:
+        st.markdown("""
+**🌆 H-1 Sore (16:00 WIB)**
+
+1. Cek konteks makro (Dow, Nikkei, Rupiah)
+2. Buka tab **🦅 Falcon Hunter**
+3. Klik **Jalankan Falcon Scan**
+4. Lihat IHSG status → tentukan size
+5. Baca ranking tabel — filter Score ≥ 0.50
+6. Validasi manual chart top 3 di TradingView
+7. Shortlist 1–3 saham untuk besok
+        """)
+    with fd2:
+        st.markdown("""
+**🌅 H Pagi (08:30 WIB)**
+
+1. Cek futures Asia & USD/IDR
+2. Hitung gap pembukaan kandidat:
+   - Gap > 2% → **SKIP**
+   - Gap ≤ 1% → lanjut
+3. Konfirmasi entry zone masih valid
+4. Scan ulang jika perlu
+        """)
+    with fd3:
+        st.markdown("""
+**⚡ H Entry (09:00–10:30 WIB)**
+
+1. Pasang order sesuai plan
+2. **Langsung pasang hard SL di broker**
+3. Set alert T1 & T2
+4. Tutup chart — jangan micromanage
+5. Evaluasi sore setelah close
+6. Update Journal Falcon
+        """)
+
+    # Rules tidak bisa ditawar
+    st.markdown("### 🚫 5 Aturan Falcon yang TIDAK BISA Ditawar")
+    st.error("""
+1. ❌  Tidak entry tanpa SL ter-set di sistem broker — TANPA PENGECUALIAN
+2. ❌  Tidak average down saham yang loss
+3. ❌  Tidak revenge trading setelah loss beruntun
+4. ❌  Tidak skip cut loss karena "yakin akan balik"
+5. ❌  Tidak melebihi 1% risk per trade, apapun feeling-nya
+
+Loss beruntun 3× → STOP trading hari itu. Review dulu, lanjut besok dengan size ½.
+Profit beruntun bukan alasan menaikkan size mendadak — streak bagus = market cocok, bukan kamu sakti.
+    """)
+
+    # Perbedaan ATS vs Falcon
+    st.markdown("### ⚖️ ATS SuperEngine vs Falcon Hunter — Perbedaan")
+    st.markdown("---")
+    pt1, pt2 = st.columns(2)
+    with pt1:
+        st.markdown("""
+**🤖 ATS SuperEngine**
+- Universe: 98 saham ISSI (luas)
+- Setup: Breakout + Bandar detection
+- Hold: Tidak ada batas waktu
+- Target: Single target, RR min 1.8×
+- Output: Score 0–100, EXECUTE/READY
+- Regime: BULLISH/SIDEWAYS/DISTRIBUTION
+- Best for: High-conviction, sabar
+        """)
+    with pt2:
+        st.markdown("""
+**🦅 Falcon Hunter**
+- Universe: 30 ticker watchlist (fokus)
+- Setup: Breakout + Bounce (dua mode)
+- Hold: Maksimal 5 hari
+- Target: T1 (1R) + T2 (2R), partial exit
+- Output: Falcon Score 0–1, BRK/BNC
+- Regime: BULLISH/NEUTRAL/BEARISH (IHSG)
+- Best for: Setup harian, agresif terukur
+        """)
+
+    st.success("""
+💡 **Cara pakai optimal:** Kalau ATS dan Falcon **keduanya** menyebut ticker yang sama → 
+itu sinyal paling kuat. Dua sistem berbeda dengan logika berbeda, tapi setuju. Conviction tertinggi.
+    """)
+
+    # Cara baca tabel Falcon
+    st.markdown("### 🔍 Cara Baca Tabel & Card Falcon Hunter")
+    st.markdown("""
+| Kolom | Artinya |
+|---|---|
+| **Setup** | 🟢 BRK = Breakout, 🔵 BNC = Bounce, — = tidak ada setup |
+| **Score 🦅** | Falcon Score 0–1. Di atas 0.5 layak dipertimbangkan |
+| **Vol×** | Rasio volume vs rata-rata 20 hari. BRK butuh ≥ 1.8×, BNC butuh ≤ 0.85× |
+| **RSI** | Harus ≤ 70. Di atas itu overbought, skip |
+| **Trend** | Skor 0–1 posisi harga vs MA20/50/200. Min 0.5 |
+| **Entry** | Harga close kemarin = level entry hari ini |
+| **SL** | Stop Loss. Wajib dipasang hard stop di broker |
+| **T1** | Target pertama (1R). Sell 50% di sini, geser SL ke breakeven |
+| **T2** | Target kedua (2R). Sell sisa atau trailing |
+| **RR** | Risk/Reward aktual. Min 1.5× untuk lanjut |
+| **Lot** | Kalkulasi otomatis berdasarkan 1% risk dari modal yang diset |
+    """)
+
+    st.markdown("---")
+    st.caption(
+        "ATS SuperEngine V4.0 | Scanner Saham Syariah ISSI | "
+        "Bukan rekomendasi investasi — selalu lakukan riset mandiri | "
+        "Gunakan dengan manajemen risiko yang ketat 🤲"
+    )
+
 
     # ── Changelog ──────────────────────────────────────────────
     st.markdown("---")
@@ -4267,6 +4525,227 @@ ATURAN OUTPUT WAJIB:
                      f"| Data: {cache.get('data_date','-')} | {cache.get('n_bars','-')} hari")
             with st.expander(label):
                 st.markdown(cache["result"])
+
+
+# ─────────────────────────────────────────────────────────────
+# TAB 6 — 🦅 FALCON HUNTER
+# ─────────────────────────────────────────────────────────────
+with tabs[6]:
+    from falcon_engine import (
+        FalconParams, FalconResult,
+        run_falcon_scan, format_falcon_telegram,
+        FALCON_DEFAULT_WATCHLIST,
+    )
+
+    st.markdown("## 🦅 Falcon Hunter — Sharia Stock Scanner")
+    st.caption("Strategi Falcon: BREAKOUT + BOUNCE | Engine terpisah dari ATS | Risk 1% per trade")
+
+    # ── Sidebar config ────────────────────────────────────────
+    with st.expander("⚙️ Pengaturan Falcon", expanded=False):
+        col_w1, col_w2 = st.columns(2)
+        with col_w1:
+            falcon_balance = st.number_input(
+                "Modal (Rp)", min_value=100_000, max_value=1_000_000_000,
+                value=int(st.session_state.get("balance", 800_000)),
+                step=100_000, format="%d",
+                help="Modal aktif untuk kalkulasi lot Falcon"
+            )
+            vol_brk = st.slider("Vol Breakout minimum (×avg20)", 1.0, 4.0, 1.8, 0.1)
+            rsi_cap = st.slider("RSI maksimum", 55, 85, 70, 1)
+        with col_w2:
+            risk_pct_falcon = st.slider("Risk per trade (%)", 0.5, 3.0, 1.0, 0.25)
+            gap_max  = st.slider("Max gap open (%)", 1.0, 5.0, 3.0, 0.5)
+            use_trend = st.checkbox("Gunakan filter trend MA20/50/200", value=True)
+
+        st.markdown("**Watchlist (pisahkan dengan koma):**")
+        wl_raw = st.text_area(
+            "Ticker",
+            value=", ".join(FALCON_DEFAULT_WATCHLIST),
+            height=100, label_visibility="collapsed"
+        )
+        watchlist_input = [t.strip().upper() for t in wl_raw.split(",") if t.strip()]
+
+    # ── Scan button ───────────────────────────────────────────
+    col_btn1, col_btn2, _ = st.columns([1, 1, 3])
+    with col_btn1:
+        do_scan = st.button("🦅 Jalankan Falcon Scan", type="primary",
+                            use_container_width=True)
+    with col_btn2:
+        only_setup = st.checkbox("Tampilkan setup saja", value=True)
+
+    # ── Run scan ──────────────────────────────────────────────
+    if do_scan:
+        falcon_params = FalconParams(
+            vol_breakout_mult = vol_brk,
+            rsi_max           = rsi_cap,
+            risk_pct          = risk_pct_falcon / 100,
+            max_gap_pct       = gap_max,
+            use_trend_filter  = use_trend,
+        )
+
+        prog_bar  = st.progress(0, text="🦅 Memulai scan Falcon...")
+        status_ph = st.empty()
+
+        def _progress(i, n, tkr):
+            pct = int(i / n * 100) if n > 0 else 100
+            prog_bar.progress(pct, text=f"🦅 Scanning {tkr}... ({i}/{n})")
+
+        ihsg_status, ihsg_score, falcon_results = run_falcon_scan(
+            watchlist  = watchlist_input,
+            balance    = falcon_balance,
+            params     = falcon_params,
+            progress_cb= _progress,
+        )
+        prog_bar.empty()
+
+        # Simpan ke session state
+        st.session_state["falcon_results"]     = falcon_results
+        st.session_state["falcon_ihsg_status"] = ihsg_status
+        st.session_state["falcon_ihsg_score"]  = ihsg_score
+
+        # Kirim Telegram kalau ada setup
+        setup_list = [r for r in falcon_results if r.setup != "-"]
+        if setup_list:
+            msg = format_falcon_telegram(falcon_results, ihsg_status, falcon_balance)
+            if msg:
+                send_telegram(msg)
+                status_ph.success(f"🦅 Telegram terkirim — {len(setup_list)} setup ditemukan")
+        else:
+            status_ph.info("🦅 Scan selesai — tidak ada setup hari ini")
+
+    # ── Display results ───────────────────────────────────────
+    if "falcon_results" in st.session_state and st.session_state.falcon_results:
+        falcon_results = st.session_state["falcon_results"]
+        ihsg_status    = st.session_state.get("falcon_ihsg_status", "NEUTRAL")
+        ihsg_score     = st.session_state.get("falcon_ihsg_score", 0.5)
+
+        # IHSG banner
+        ihsg_color = {"BULLISH": "🟢", "NEUTRAL": "🟡", "BEARISH": "🔴"}
+        ihsg_em    = ihsg_color.get(ihsg_status, "⬜")
+        ihsg_action = {
+            "BULLISH": "Full size, scan agresif — market mendukung",
+            "NEUTRAL": "Size ½ — hanya ambil Falcon Score terbaik",
+            "BEARISH": "🛑 Falcon istirahat — paper trade only",
+        }.get(ihsg_status, "-")
+
+        col_ih1, col_ih2, col_ih3 = st.columns(3)
+        col_ih1.metric("IHSG Status", f"{ihsg_em} {ihsg_status}")
+        setup_count = sum(1 for r in falcon_results if r.setup != "-")
+        brk_count   = sum(1 for r in falcon_results if r.setup == "BRK")
+        bnc_count   = sum(1 for r in falcon_results if r.setup == "BNC")
+        col_ih2.metric("Setup Ditemukan", f"{setup_count} / {len(falcon_results)}")
+        col_ih3.metric("BRK / BNC", f"{brk_count} / {bnc_count}")
+        st.info(f"📌 **Falcon guidance:** {ihsg_action}")
+        st.markdown("---")
+
+        # Filter display
+        display_list = (
+            [r for r in falcon_results if r.setup != "-"]
+            if only_setup else falcon_results
+        )
+
+        if not display_list:
+            st.warning("Tidak ada setup yang memenuhi kriteria Falcon saat ini.")
+        else:
+            # ── Setup cards ─────────────────────────────────
+            setup_results = [r for r in display_list if r.setup != "-"]
+            if setup_results:
+                st.markdown("### 🎯 Setup Aktif")
+                for r in setup_results:
+                    em   = "🟢" if r.setup == "BRK" else "🔵"
+                    mode = "BREAKOUT" if r.setup == "BRK" else "BOUNCE"
+                    rr_actual = round((r.t2 - r.entry) / max(r.entry - r.sl, 1), 1)
+
+                    with st.container(border=True):
+                        c1, c2, c3, c4, c5 = st.columns([2, 1.5, 1.5, 1.5, 1.5])
+                        c1.markdown(f"### {em} {r.ticker}")
+                        c1.caption(f"{mode} | Score: **{r.falcon_score:.2f}**")
+                        c2.metric("Entry", f"Rp {int(r.entry):,}")
+                        c2.caption(f"Vol: {r.vol_ratio:.1f}× | RSI: {r.rsi}")
+                        c3.metric("Stop Loss", f"Rp {int(r.sl):,}",
+                                  delta=f"{((r.sl-r.entry)/r.entry*100):.1f}%",
+                                  delta_color="inverse")
+                        c4.metric("T1 (1R)", f"Rp {int(r.t1):,}")
+                        c4.metric("T2 (2R)", f"Rp {int(r.t2):,}")
+                        c5.metric("RR aktual", f"{rr_actual}×")
+                        c5.metric("Lot", f"{r.lot} lot")
+
+                        # Detail row
+                        with st.expander("Detail teknikal"):
+                            d1, d2, d3 = st.columns(3)
+                            d1.markdown(f"**Trend Score:** {r.trend_score:.2f}")
+                            d1.markdown(f"**MA20:** {int(r.ma20):,}")
+                            d1.markdown(f"**MA50:** {int(r.ma50):,}")
+                            d1.markdown(f"**MA200:** {int(r.ma200):,}")
+                            d2.markdown(f"**Upper shadow:** {r.upper_shadow:.1f}%")
+                            d2.markdown(f"**Body ratio:** {r.body_ratio:.1f}%")
+                            d2.markdown(f"**Gap open:** {r.gap_pct:+.2f}%")
+                            d3.markdown(f"**Resistance 10D:** {int(r.resistance):,}")
+                            d3.markdown(f"**Support 20D:** {int(r.support):,}")
+                            d3.markdown(f"**Risk/trade:** Rp {int(r.risk_rp):,}")
+
+            # ── Full ranking table ───────────────────────────
+            st.markdown("---")
+            st.markdown("### 📊 Ranking Falcon Score — Semua Ticker")
+
+            table_data = []
+            for r in display_list:
+                em = ("🟢 BRK" if r.setup == "BRK"
+                      else "🔵 BNC" if r.setup == "BNC"
+                      else "—")
+                rr_t2 = round((r.t2 - r.entry) / max(r.entry - r.sl, 1), 1) if r.entry > r.sl else 0
+                table_data.append({
+                    "Ticker"       : r.ticker,
+                    "Setup"        : em,
+                    "Close"        : f"Rp {int(r.close):,}" if r.close else "-",
+                    "Score 🦅"     : f"{r.falcon_score:.2f}",
+                    "Vol×"         : f"{r.vol_ratio:.2f}×",
+                    "RSI"          : f"{r.rsi:.1f}",
+                    "Trend"        : f"{r.trend_score:.2f}",
+                    "Entry"        : f"Rp {int(r.entry):,}" if r.entry else "-",
+                    "SL"           : f"Rp {int(r.sl):,}"    if r.sl    else "-",
+                    "T1"           : f"Rp {int(r.t1):,}"    if r.t1    else "-",
+                    "T2"           : f"Rp {int(r.t2):,}"    if r.t2    else "-",
+                    "RR"           : f"{rr_t2}×"            if rr_t2   else "-",
+                    "Lot"          : r.lot if r.lot else "-",
+                    "Gap%"         : f"{r.gap_pct:+.1f}%",
+                    "Ket"          : r.error if r.error else "✅",
+                })
+
+            df_tbl = pd.DataFrame(table_data)
+            st.dataframe(
+                df_tbl, use_container_width=True, hide_index=True,
+                column_config={
+                    "Score 🦅": st.column_config.ProgressColumn(
+                        "Score 🦅", min_value=0, max_value=1, format="%.2f"
+                    ),
+                    "Setup": st.column_config.TextColumn("Setup", width="small"),
+                }
+            )
+
+            # ── Falcon SOP reminder ──────────────────────────
+            st.markdown("---")
+            with st.expander("📋 Falcon SOP — Rules Tidak Bisa Ditawar", expanded=False):
+                st.markdown("""
+**Entry rules:**
+- Gap up > 2% → **SKIP**, R:R rusak
+- Gap up 1–2% → tunggu pullback dulu
+- Gap down ≤ 1% → opportunity bagus
+- Entry hanya 09:00 – 10:30 WIB (prime time)
+
+**Exit rules:**
+- **T1 (1R):** Sell 50% + geser SL ke breakeven
+- **T2 (2R):** Sell sisa atau aktifkan trailing
+- **Time stop:** 5 hari tidak ke T1 → exit di close H+5
+- **Pattern break:** Bearish engulfing + vol tinggi → exit penuh
+
+**Risk rules (tidak bisa dilanggar):**
+- ❌ Tidak entry tanpa SL hard stop di broker
+- ❌ Tidak average down
+- ❌ Tidak revenge trading
+- ❌ Loss 3× beruntun → stop hari itu
+- ❌ IHSG BEARISH → Falcon istirahat
+""")
 
 
 st.divider()
