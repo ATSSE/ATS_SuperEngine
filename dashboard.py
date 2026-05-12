@@ -113,10 +113,28 @@ _telegram_lock = threading.Lock()
 # ============================================================
 # VERSION HISTORY
 # ============================================================
-APP_VERSION  = "V5.6.3"
-APP_UPDATED  = "06 Mei 2026"
+APP_VERSION  = "V5.6.4"
+APP_UPDATED  = "12 Mei 2026"
 
 VERSION_HISTORY = [
+    {
+        "versi":   "V5.6.4",
+        "tanggal": "12 Mei 2026",
+        "tipe":    "Feature — Falcon Macro Check SOP A.1",
+        "ringkasan": "Tombol Cek Konteks Makro otomatis di tab Falcon Hunter — fetch data global real-time sesuai SOP A.1",
+        "detail": [
+            "[FEAT #1] get_falcon_macro_context(): fetch Dow, S&P500, Nikkei, KOSPI, IHSG, USD/IDR via yfinance",
+            "  Data diambil real-time saat tombol diklik — tidak perlu buka tab lain",
+            "  Status setiap indeks: naik/turun/flat dengan delta persen",
+            "[FEAT #2] Verdict makro otomatis (BULLISH/NEUTRAL/BEARISH) untuk guidance Falcon sizing",
+            "  Logic: ≥3 dari 4 indeks global naik → BULLISH; ≥3 turun → BEARISH; sisanya NEUTRAL",
+            "  Override: jika IHSG BEARISH dari scan → verdict BEARISH otomatis",
+            "[FEAT #3] Tombol '🌍 Cek Makro (SOP A.1)' di row tombol scan Falcon",
+            "  Tampil di expander 'Konteks Makro SOP A.1' dengan tabel terstruktur",
+            "  Checklist sesuai SOP A.1: Dow/S&P semalam, Asia pagi, Rupiah, guidance besok",
+            "[FEAT #4] Checklist berita besok manual — reminder no-trade day kalau ada FOMC/BI Rate",
+        ]
+    },
     {
         "versi":   "V5.6.3",
         "tanggal": "06 Mei 2026",
@@ -2756,6 +2774,84 @@ def start_scheduler():
 _scheduler = start_scheduler()
 
 # ============================================================
+# 🌍 FALCON MACRO CONTEXT — SOP A.1
+# Fetch data makro global real-time untuk checklist Falcon
+# ============================================================
+
+def get_falcon_macro_context() -> dict:
+    """
+    Fetch data makro sesuai SOP Falcon A.1:
+    - Wall Street semalam (Dow, S&P500)
+    - Asia pagi (Nikkei, KOSPI)
+    - IHSG hari ini
+    - USD/IDR Rupiah
+    Return dict lengkap dengan verdict makro Falcon.
+    """
+    result = {
+        "dow":    {"value": None, "change": 0.0, "status": "flat"},
+        "sp500":  {"value": None, "change": 0.0, "status": "flat"},
+        "nikkei": {"value": None, "change": 0.0, "status": "flat"},
+        "kospi":  {"value": None, "change": 0.0, "status": "flat"},
+        "ihsg":   {"value": None, "change": 0.0, "status": "flat"},
+        "usdidr": {"value": None, "change": 0.0, "status": "flat"},
+        "verdict": "NEUTRAL",
+        "verdict_reason": "Data belum lengkap",
+        "fetch_time": datetime.now(WIB).strftime("%H:%M WIB"),
+    }
+
+    ticker_map = {
+        "dow":    "^DJI",
+        "sp500":  "^GSPC",
+        "nikkei": "^N225",
+        "kospi":  "^KS11",
+        "ihsg":   "^JKSE",
+        "usdidr": "USDIDR=X",
+    }
+
+    for key, tkr in ticker_map.items():
+        try:
+            df = yf.download(tkr, period="5d", interval="1d",
+                             progress=False, auto_adjust=True)
+            if df is None or len(df) < 2:
+                continue
+            cl = df["Close"].squeeze()
+            last = float(cl.iloc[-1])
+            prev = float(cl.iloc[-2])
+            chg  = (last - prev) / prev * 100 if prev > 0 else 0.0
+            status = "up" if chg > 0.3 else ("down" if chg < -0.3 else "flat")
+            result[key] = {"value": last, "change": chg, "status": status}
+        except Exception as e:
+            LOG.warning(f"macro_fetch {tkr}: {e}")
+
+    # ── Verdict logic ────────────────────────────────────────
+    global_keys    = ["dow", "sp500", "nikkei", "kospi"]
+    n_up   = sum(1 for k in global_keys if result[k]["status"] == "up")
+    n_down = sum(1 for k in global_keys if result[k]["status"] == "down")
+
+    if n_down >= 3:
+        verdict = "BEARISH"
+        reason  = f"{n_down}/4 indeks global turun — sentimen negatif, Falcon waspada"
+    elif n_up >= 3:
+        verdict = "BULLISH"
+        reason  = f"{n_up}/4 indeks global naik — sentimen positif, Falcon aktif"
+    else:
+        verdict = "NEUTRAL"
+        reason  = f"Sentimen global mixed ({n_up} naik, {n_down} turun) — Falcon selektif"
+
+    # IHSG override — paling menentukan untuk IDX
+    ihsg_st = st.session_state.get("falcon_ihsg_status", "")
+    if ihsg_st == "BEARISH":
+        verdict = "BEARISH"
+        reason  = "IHSG BEARISH (di bawah MA20 & MA50) — Falcon istirahat, paper trade only"
+    elif ihsg_st == "BULLISH" and verdict == "BULLISH":
+        reason = f"IHSG BULLISH + {n_up}/4 global naik — kondisi ideal, full size"
+
+    result["verdict"]        = verdict
+    result["verdict_reason"] = reason
+    return result
+
+
+# ============================================================
 # UI
 # ============================================================
 st.set_page_config(
@@ -4566,14 +4662,92 @@ with tabs[6]:
         watchlist_input = [t.strip().upper() for t in wl_raw.split(",") if t.strip()]
 
     # ── Scan button ───────────────────────────────────────────
-    col_btn1, col_btn2, _ = st.columns([1, 1, 3])
+    col_btn1, col_btn2, col_btn3 = st.columns([1.2, 1, 1.2])
     with col_btn1:
         do_scan = st.button("🦅 Jalankan Falcon Scan", type="primary",
                             use_container_width=True)
     with col_btn2:
         only_setup = st.checkbox("Tampilkan setup saja", value=True)
+    with col_btn3:
+        do_macro = st.button("🌍 Cek Makro (SOP A.1)",
+                             use_container_width=True,
+                             help="Fetch data Dow, Nikkei, KOSPI, IHSG, Rupiah — sesuai checklist SOP A.1")
 
-    # ── Run scan ──────────────────────────────────────────────
+    # ── Macro Check SOP A.1 ───────────────────────────────────
+    if do_macro:
+        with st.spinner("🌍 Mengambil data makro global..."):
+            macro = get_falcon_macro_context()
+        st.session_state["falcon_macro"] = macro
+
+    if "falcon_macro" in st.session_state:
+        macro = st.session_state["falcon_macro"]
+        verdict    = macro["verdict"]
+        v_color    = {"BULLISH": "success", "NEUTRAL": "warning", "BEARISH": "error"}
+        v_emoji    = {"BULLISH": "🟢", "NEUTRAL": "🟡", "BEARISH": "🔴"}
+        v_action   = {
+            "BULLISH": "Full size, scan agresif, target normal.",
+            "NEUTRAL": "Size ½ — hanya ambil Falcon Score tertinggi.",
+            "BEARISH": "🛑 Falcon istirahat — paper trade only. Jangan entry real.",
+        }
+
+        with st.expander(
+            f"🌍 Konteks Makro SOP A.1 — {v_emoji.get(verdict,'')} {verdict} "
+            f"| {macro['fetch_time']}",
+            expanded=True,
+        ):
+            # Verdict banner
+            getattr(st, v_color.get(verdict, "info"))(
+                f"**{v_emoji.get(verdict,'')} Verdict Makro Falcon: {verdict}** — "
+                f"{macro['verdict_reason']}\n\n"
+                f"📌 Panduan: {v_action.get(verdict,'')}"
+            )
+
+            # Metrics row 1: Wall Street
+            st.markdown("**📊 Wall Street semalam**")
+            mw1, mw2 = st.columns(2)
+
+            def _fmt_val(d: dict, is_currency: bool = False) -> str:
+                if d["value"] is None: return "N/A"
+                v = d["value"]
+                return f"{v:,.0f}" if not is_currency else f"Rp {v:,.0f}"
+
+            def _delta_str(d: dict) -> str:
+                if d["value"] is None: return ""
+                sign = "▲" if d["status"] == "up" else ("▼" if d["status"] == "down" else "→")
+                return f"{sign} {d['change']:+.2f}%"
+
+            mw1.metric("Dow Jones",  _fmt_val(macro["dow"]),   _delta_str(macro["dow"]))
+            mw2.metric("S&P 500",    _fmt_val(macro["sp500"]), _delta_str(macro["sp500"]))
+
+            st.markdown("**🌏 Asia pagi ini**")
+            ma1, ma2 = st.columns(2)
+            ma1.metric("Nikkei 225", _fmt_val(macro["nikkei"]), _delta_str(macro["nikkei"]))
+            ma2.metric("KOSPI",      _fmt_val(macro["kospi"]),  _delta_str(macro["kospi"]))
+
+            st.markdown("**💱 Rupiah & IHSG**")
+            mr1, mr2 = st.columns(2)
+            mr1.metric("USD/IDR",
+                       f"Rp {macro['usdidr']['value']:,.0f}" if macro["usdidr"]["value"] else "N/A",
+                       _delta_str(macro["usdidr"]),
+                       delta_color="inverse")   # rupiah melemah = negatif
+            mr2.metric("IHSG",
+                       _fmt_val(macro["ihsg"]),
+                       _delta_str(macro["ihsg"]))
+
+            # Checklist manual
+            st.markdown("---")
+            st.markdown("**📋 Checklist SOP A.1 — Manual**")
+            st.markdown(
+                "- [ ] **Komoditas** (CPO, batu bara, nikel) → cek Investing.com\n"
+                "- [ ] **Yield SBN 10Y** → cek DJPPR / Bloomberg Indonesia\n"
+                "- [ ] **Berita besok** (FOMC? BI Rate? Inflasi?) → kalau ada: *no-trade day*"
+            )
+            st.caption(
+                f"Data dari yfinance — diambil {macro['fetch_time']}. "
+                "Klik tombol lagi untuk refresh."
+            )
+
+    st.markdown("---")
     if do_scan:
         falcon_params = FalconParams(
             vol_breakout_mult = vol_brk,
