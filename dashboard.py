@@ -113,10 +113,29 @@ _telegram_lock = threading.Lock()
 # ============================================================
 # VERSION HISTORY
 # ============================================================
-APP_VERSION  = "V5.6.4"
+APP_VERSION  = "V5.6.5"
 APP_UPDATED  = "12 Mei 2026"
 
 VERSION_HISTORY = [
+    {
+        "versi":   "V5.6.5",
+        "tanggal": "12 Mei 2026",
+        "tipe":    "Feature — Falcon Macro Resume & Aksi",
+        "ringkasan": "Interpretasi otomatis + kesimpulan aksi Falcon langsung di dashboard setelah Cek Makro",
+        "detail": [
+            "[FEAT #1] Interpretasi per indeks otomatis — narasi dinamis sesuai data real",
+            "  Wall Street: kuat/tipis/lemah dengan reasoning untuk IDX",
+            "  KOSPI: deteksi koreksi dan penjelasan korelasi terbatas ke IDX (bukan chip)",
+            "  Rupiah: interpretasi capital outflow / inflow dengan nilai aktual",
+            "  IHSG: status MA20/MA50 dan kapan Falcon aktif kembali",
+            "[FEAT #2] Kesimpulan Aksi Falcon otomatis per verdict:",
+            "  BEARISH → tabel aksi lengkap + trigger kapan Falcon aktif kembali",
+            "  NEUTRAL → panduan size ½ + seleksi setup",
+            "  BULLISH → panduan full size + scan agresif",
+            "[FEAT #3] Checklist besok pagi (08:30 WIB) sesuai SOP A.1",
+            "  Futures Asia, gap pembukaan, komoditas, SBN 10Y, berita penting",
+        ]
+    },
     {
         "versi":   "V5.6.4",
         "tanggal": "12 Mei 2026",
@@ -124,15 +143,8 @@ VERSION_HISTORY = [
         "ringkasan": "Tombol Cek Konteks Makro otomatis di tab Falcon Hunter — fetch data global real-time sesuai SOP A.1",
         "detail": [
             "[FEAT #1] get_falcon_macro_context(): fetch Dow, S&P500, Nikkei, KOSPI, IHSG, USD/IDR via yfinance",
-            "  Data diambil real-time saat tombol diklik — tidak perlu buka tab lain",
-            "  Status setiap indeks: naik/turun/flat dengan delta persen",
-            "[FEAT #2] Verdict makro otomatis (BULLISH/NEUTRAL/BEARISH) untuk guidance Falcon sizing",
-            "  Logic: ≥3 dari 4 indeks global naik → BULLISH; ≥3 turun → BEARISH; sisanya NEUTRAL",
-            "  Override: jika IHSG BEARISH dari scan → verdict BEARISH otomatis",
-            "[FEAT #3] Tombol '🌍 Cek Makro (SOP A.1)' di row tombol scan Falcon",
-            "  Tampil di expander 'Konteks Makro SOP A.1' dengan tabel terstruktur",
-            "  Checklist sesuai SOP A.1: Dow/S&P semalam, Asia pagi, Rupiah, guidance besok",
-            "[FEAT #4] Checklist berita besok manual — reminder no-trade day kalau ada FOMC/BI Rate",
+            "[FEAT #2] Verdict makro otomatis BULLISH/NEUTRAL/BEARISH dengan guidance sizing",
+            "[FEAT #3] Tombol Cek Makro (SOP A.1) di row tombol scan Falcon",
         ]
     },
     {
@@ -4734,13 +4746,127 @@ with tabs[6]:
                        _fmt_val(macro["ihsg"]),
                        _delta_str(macro["ihsg"]))
 
-            # Checklist manual
+            # ── Interpretasi per indeks ──────────────────────
             st.markdown("---")
-            st.markdown("**📋 Checklist SOP A.1 — Manual**")
+            st.markdown("**🔍 Interpretasi Falcon**")
+
+            interp_items = []
+
+            # Wall Street
+            ws_avg = (macro["dow"]["change"] + macro["sp500"]["change"]) / 2
+            if ws_avg > 1.0:
+                interp_items.append(("🟢", f"Wall Street naik kuat (avg {ws_avg:+.2f}%) — sentimen global positif, mendukung Asia pagi ini."))
+            elif ws_avg > 0.1:
+                interp_items.append(("🟡", f"Wall Street naik tipis (avg {ws_avg:+.2f}%) — tidak ada dorongan kuat. Bukan katalis bullish yang meyakinkan."))
+            elif ws_avg < -1.0:
+                interp_items.append(("🔴", f"Wall Street turun tajam (avg {ws_avg:+.2f}%) — tekanan jual dari global, waspada IDX pagi."))
+            else:
+                interp_items.append(("🔴", f"Wall Street melemah (avg {ws_avg:+.2f}%) — sentimen negatif ringan untuk Asia."))
+
+            # Nikkei
+            n_chg = macro["nikkei"]["change"]
+            if macro["nikkei"]["value"] is not None:
+                if n_chg > 1.0:
+                    interp_items.append(("🟢", f"Nikkei +{n_chg:.2f}% — Jepang kuat, mendukung sentimen Asia termasuk IDX."))
+                elif n_chg > 0:
+                    interp_items.append(("🟡", f"Nikkei +{n_chg:.2f}% — positif tipis, kontribusi terbatas ke IDX."))
+                else:
+                    interp_items.append(("🔴", f"Nikkei {n_chg:+.2f}% — Jepang melemah, tambah tekanan ke Asia."))
+
+            # KOSPI
+            k_chg = macro["kospi"]["change"]
+            if macro["kospi"]["value"] is not None:
+                if k_chg < -2.0:
+                    interp_items.append(("🔴", f"KOSPI {k_chg:+.2f}% — Korea koreksi tajam. Perhatikan: rally KOSPI biasanya driven chip/AI yang tidak ada di IDX, sehingga korelasinya ke IHSG terbatas."))
+                elif k_chg > 2.0:
+                    interp_items.append(("🟢", f"KOSPI {k_chg:+.2f}% — Korea terbang. Namun jika driven oleh chip/semikonduktor, dampak ke IDX minimal karena sektor ini tidak ada di bursa Indonesia."))
+                elif k_chg > 0:
+                    interp_items.append(("🟡", f"KOSPI {k_chg:+.2f}% — Korea naik tipis, sentimen Asia oke."))
+                else:
+                    interp_items.append(("🔴", f"KOSPI {k_chg:+.2f}% — Korea melemah, tambah sentimen negatif regional."))
+
+            # Rupiah
+            idr_chg = macro["usdidr"]["change"]
+            if macro["usdidr"]["value"] is not None:
+                idr_val = macro["usdidr"]["value"]
+                if idr_chg > 0.5:
+                    interp_items.append(("🔴", f"Rupiah melemah {idr_chg:+.2f}% ke Rp {idr_val:,.0f} — sinyal asing masih keluar dari IDX. Capital outflow belum berhenti → tekanan jual di saham unggulan."))
+                elif idr_chg > 0:
+                    interp_items.append(("🟡", f"Rupiah sedikit melemah ({idr_chg:+.2f}%) — perlu dipantau, tapi belum alarm."))
+                elif idr_chg < -0.3:
+                    interp_items.append(("🟢", f"Rupiah menguat {idr_chg:+.2f}% ke Rp {idr_val:,.0f} — positif untuk IDX, asing cenderung masuk."))
+                else:
+                    interp_items.append(("🟡", f"Rupiah relatif stabil ({idr_chg:+.2f}%) — faktor netral."))
+
+            # IHSG
+            ihsg_chg = macro["ihsg"]["change"]
+            ihsg_val  = macro["ihsg"]["value"]
+            ihsg_st   = st.session_state.get("falcon_ihsg_status", "NEUTRAL")
+            if ihsg_val is not None:
+                if ihsg_st == "BEARISH":
+                    interp_items.append(("🔴", f"IHSG {ihsg_chg:+.2f}% di {ihsg_val:,.0f} — masih di bawah MA20 & MA50. Status BEARISH. Butuh recovery ke atas MA20 dulu untuk Falcon aktif kembali."))
+                elif ihsg_st == "NEUTRAL":
+                    interp_items.append(("🟡", f"IHSG {ihsg_chg:+.2f}% di {ihsg_val:,.0f} — NEUTRAL, di atas salah satu MA. Falcon bisa jalan dengan size ½."))
+                else:
+                    interp_items.append(("🟢", f"IHSG {ihsg_chg:+.2f}% di {ihsg_val:,.0f} — BULLISH, di atas MA20 & MA50. Kondisi ideal untuk Falcon full size."))
+
+            for emoji, text in interp_items:
+                st.markdown(f"{emoji} {text}")
+
+            # ── Kesimpulan Aksi ──────────────────────────────
+            st.markdown("---")
+            st.markdown("**🎯 Kesimpulan Aksi Falcon**")
+
+            if verdict == "BEARISH":
+                st.error(
+                    "🛑 **FALCON ISTIRAHAT — Tidak ada real trade besok**\n\n"
+                    "| Keputusan | Status |\n"
+                    "|---|---|\n"
+                    "| Real trade | ❌ TIDAK — IHSG bearish, SOP melarang |\n"
+                    "| Paper trade | ✅ Boleh — catat setup untuk latihan |\n"
+                    "| Position size | — Nihil |\n"
+                    "| Watchlist | 👀 Pantau kandidat kuat untuk entry saat kondisi membaik |\n"
+                    "| Posisi lama mendekati SL | ⚠️ Biarkan hard stop bekerja, jangan average down |"
+                )
+                st.markdown("**🔓 Kapan Falcon aktif kembali?**")
+                ihsg_val_str = f"{ihsg_val:,.0f}" if ihsg_val else "saat ini"
+                st.info(
+                    f"- IHSG kembali di atas **MA20 atau MA50** → status NEUTRAL → Falcon aktif size ½\n"
+                    f"- IHSG di atas **MA20 dan MA50** → status BULLISH → Falcon full size\n"
+                    f"- Rupiah menguat kembali → konfirmasi asing masuk → sentimen membaik"
+                )
+
+            elif verdict == "NEUTRAL":
+                st.warning(
+                    "🟡 **SIZE ½ — Selektif, hanya setup terbaik**\n\n"
+                    "| Keputusan | Status |\n"
+                    "|---|---|\n"
+                    "| Real trade | ✅ Boleh — tapi size ½ dari normal |\n"
+                    "| Pilih setup | Hanya Falcon Score tertinggi (≥ 0.60) |\n"
+                    "| Max posisi | 1–2 saja, bukan 3 |\n"
+                    "| Watchlist | Fokus BRK/BNC dengan volume konfirmasi kuat |"
+                )
+
+            else:  # BULLISH
+                st.success(
+                    "🟢 **FULL SIZE — Kondisi ideal, scan agresif**\n\n"
+                    "| Keputusan | Status |\n"
+                    "|---|---|\n"
+                    "| Real trade | ✅ Boleh — full size sesuai SOP |\n"
+                    "| Pilih setup | BRK prioritas, BNC sebagai pelengkap |\n"
+                    "| Max posisi | Hingga 3 posisi simultan |\n"
+                    "| Target | T1 dan T2 normal sesuai R-multiple |"
+                )
+
+            # ── Checklist pagi besok ─────────────────────────
+            st.markdown("---")
+            st.markdown("**☀️ Checklist Besok Pagi (08:30 WIB)**")
             st.markdown(
-                "- [ ] **Komoditas** (CPO, batu bara, nikel) → cek Investing.com\n"
+                "- [ ] Cek **futures Asia & USD/IDR** — kalau jeblok semua, Falcon mundur\n"
+                "- [ ] Hitung **gap pembukaan** kandidat: >2% → SKIP\n"
+                "- [ ] **Komoditas** (CPO, batu bara, minyak) → cek Investing.com\n"
                 "- [ ] **Yield SBN 10Y** → cek DJPPR / Bloomberg Indonesia\n"
-                "- [ ] **Berita besok** (FOMC? BI Rate? Inflasi?) → kalau ada: *no-trade day*"
+                "- [ ] **Berita hari ini** — ada FOMC / BI Rate / data inflasi? → *no-trade day*"
             )
             st.caption(
                 f"Data dari yfinance — diambil {macro['fetch_time']}. "
