@@ -4841,7 +4841,26 @@ with tabs[7]:
         "Input dari kandidat ATS scan hari ini. Bukan broker flow — ini adalah proxy."
     )
 
-    # ── Edukasi banner ─────────────────────────────────────────
+    # ── Jesse Livermore reminder ───────────────────────────────
+    st.info("""
+**📖 Metodologi: Jesse Livermore — Modernised**
+
+> *"There is nothing new in Wall Street. There can't be because speculation is as old as the hills. 
+> Whatever happens in the stock market today has happened before and will happen again."*
+> — Jesse Livermore, Reminiscences of a Stock Operator
+
+**Prinsip Livermore yang dipakai di sini:**
+- 🔊 **Volume adalah sidik jari bandar** — institusi tidak bisa menyembunyikan jejak mereka
+- 📈 **Pivot point + volume spike** = momen bandar mulai push harga (Initial Markup)
+- 🤫 **Akumulasi senyap** = bandar kumpul saham sebelum harga digerakkan
+- 🔴 **Distribusi** = bandar jual ke retail yang FOMO — sinyal berbahaya
+- ⏳ **"Big operators always tip their hand"** — baca jejaknya, ikuti gerakannya
+
+*Bandar Hunter adalah implementasi modern dari tape reading Livermore — 
+bukan intuisi, tapi data 5 menit yang dikuantifikasi.*
+    """)
+
+    st.markdown("---")
     with st.expander("📚 Memahami Pergerakan Bandar — Baca Dulu", expanded=False):
         st.markdown("""
 ### Bagaimana Bandar Bergerak?
@@ -4906,7 +4925,7 @@ Karena itu mereka bergerak dengan **pola yang bisa dideteksi**:
 
         default_tickers = (
             ", ".join(ats_candidates) if ats_candidates
-            else "BRIS, ADRO, ANTM, TLKM, UNTR, INDF, BBRI, BMRI"
+            else "BRIS, ADRO, ANTM, TLKM, UNTR, INDF, KLBF, ICBP, EXCL, PTBA"
         )
 
         bh_tickers_raw = st.text_input(

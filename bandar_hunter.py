@@ -3,12 +3,28 @@
 Deteksi pergerakan institusional / bandar via anomali volume + price
 pada data intraday 5 menit.
 
+METODOLOGI: Jesse Livermore — Modernised
+─────────────────────────────────────────
+"The market does not beat them. They beat themselves, because though they
+have brains they cannot sit tight." — Jesse Livermore
+
+Livermore membaca "tape" untuk mendeteksi pergerakan Big Operators.
+Engine ini melakukan hal yang sama — bukan dengan mata dan intuisi,
+tapi dengan data 5 menit dan kalkulasi volume anomali.
+
+4 Prinsip Livermore yang diimplementasikan:
+  1. Volume spike    = Big Operators masuk (sidik jari tidak bisa disembunyikan)
+  2. Akumulasi senyap = Bandar kumpul saham sebelum markup (beli bertahap)
+  3. Initial Markup  = Bandar mulai push harga — entry window terbaik
+  4. Distribusi      = Bandar jual ke retail — jauhi atau exit
+
+"There is nothing new in Wall Street. Whatever happens today has
+happened before and will happen again." — Jesse Livermore
+
 FILOSOFI:
-Bandar tidak bisa menyembunyikan jejak mereka — volume adalah sidik jari.
-Ketika institusi mulai akumulasi atau markup, ada 3 hal yang selalu terjadi:
-  1. Volume melonjak tiba-tiba jauh di atas normal
-  2. Harga bergerak impulsif dalam waktu singkat
-  3. Tidak ada pullback besar setelah lonjakan (demand menyerap supply)
+Bandar tidak bisa membeli jutaan lembar sekaligus tanpa meninggalkan
+jejak di volume dan price. Tugas kita: baca jejak itu sebelum retail
+menyadarinya.
 
 DATA SOURCE: yfinance 5m (tersedia, gratis, cukup akurat untuk IDX)
 INPUT     : kandidat dari hasil scan ATS (3-5 ticker) + watchlist custom
