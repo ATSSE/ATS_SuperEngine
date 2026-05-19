@@ -4832,7 +4832,7 @@ with tabs[7]:
     from bandar_hunter import (
         run_bandar_scan, bandar_hunter_job,
         format_bandar_telegram, BandarSignal,
-        SIGNAL_EDUCATION,
+        SIGNAL_EDUCATION, BANDAR_BASE_WATCHLIST,
     )
 
     st.markdown("## 🎯 Bandar Hunter — Institutional Movement Detector")
@@ -4925,7 +4925,7 @@ Karena itu mereka bergerak dengan **pola yang bisa dideteksi**:
 
         default_tickers = (
             ", ".join(ats_candidates) if ats_candidates
-            else "BRIS, ADRO, ANTM, TLKM, UNTR, INDF, KLBF, ICBP, EXCL, PTBA"
+            else ", ".join(BANDAR_BASE_WATCHLIST)
         )
 
         bh_tickers_raw = st.text_input(

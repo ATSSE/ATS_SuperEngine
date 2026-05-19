@@ -309,16 +309,40 @@ def run_bandar_scan(
 # ─────────────────────────────────────────────────────────────
 # BACKGROUND JOB — dipanggil dari scheduler
 # ─────────────────────────────────────────────────────────────
-# Watchlist tetap Bandar Hunter — selalu dipantau regardless ATS output
+# Watchlist tetap Bandar Hunter — FULL 98 ISSI Universe
+# Sync dengan config/universe.py ATS SuperEngine
 # Radar independen, tidak tergantung hasil scan ATS
 BANDAR_BASE_WATCHLIST: list[str] = [
-    # Blue chip syariah — likuid, sering jadi target bandar
-    "ADRO", "ANTM", "BRIS", "BRPT", "ESSA",
-    "EXCL", "ICBP", "INCO", "INDF", "INTP",
-    "KLBF", "MDKA", "MYOR", "PGAS", "PTBA",
-    "SMGR", "TLKM", "TPIA", "UNTR", "UNVR",
-    "AKRA", "AMRT", "CPIN", "HRUM", "ITMG",
-    "JPFA", "MAPI", "SIDO", "TINS", "MIKA",
+    # ENERGY
+    "ADRO","ADMR","ITMG","PTBA","HRUM","PGAS","MEDC","ELSA","PGEO","BUMI","INDY","AKRA",
+    # MINING
+    "ANTM","INCO","MDKA","TINS","NCKL","BRMS","HRTA","AMMN","MBMA",
+    # BANK SYARIAH
+    "BRIS","BPAM","PNLF",
+    # TELCO
+    "TLKM","EXCL","ISAT","MTEL","TOWR","TBIG",
+    # CONSUMER STAPLES
+    "ICBP","INDF","CPIN","JPFA","SIDO","ULTJ","MYOR","ROTI","STTP","CLEO","GOOD","FOOD","ICHI",
+    # CONSUMER DISCRETIONARY
+    "AMRT","ACES","ERAA","MAPI","RALS","LPPF","MAPB",
+    # HEALTHCARE
+    "MIKA","HEAL","KLBF","SILO","SAME","MERK","PYFA",
+    # PROPERTY
+    "CTRA","PWON","SMRA","DMAS","BSDE","BEST","KIJA",
+    # CONSTRUCTION
+    "WSKT","WIKA","PTPP","ADHI","WEGE",
+    # INDUSTRIAL
+    "ASII","UNTR","SMGR","INTP","IMPC","SMSM","AUTO","WOOD","MARK","KBLI","SCCO",
+    # PLANTATION
+    "LSIP","DSNG","SIMP","AALI","TBLA","SSMS",
+    # MEDIA
+    "SCMA","EMTK",
+    # CHEMICAL
+    "TKIM","INKP",
+    # LOGISTICS
+    "ASSA","TMAS","SMDR","BIRD","TRUK",
+    # TECHNOLOGY
+    "DCII","MLPT","MTDL",
 ]
 
 
