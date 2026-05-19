@@ -4899,7 +4899,9 @@ Karena itu mereka bergerak dengan **pola yang bisa dideteksi**:
     with col_inp1:
         # Auto-populate dari hasil scan ATS hari ini
         ats_candidates = []
-        if "scan_result" in st.session_state and not st.session_state.scan_result.empty:
+        if ("scan_result" in st.session_state and
+                st.session_state.scan_result is not None and
+                not st.session_state.scan_result.empty):
             ats_candidates = st.session_state.scan_result["Ticker"].tolist()[:8]
 
         default_tickers = (
