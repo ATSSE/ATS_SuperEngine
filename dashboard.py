@@ -4953,13 +4953,18 @@ Karena itu mereka bergerak dengan **pola yang bisa dideteksi**:
         do_bh_scan = st.button("🎯 Scan Bandar Sekarang",
                                type="primary", use_container_width=True)
     with col_btn_bh2:
-        send_tg_bh = st.checkbox("Kirim Telegram", value=True)
+        send_tg_bh = st.checkbox("Kirim Telegram", value=True,
+                                  key="bh_send_telegram")
 
     # ── Run scan ──────────────────────────────────────────────
     if do_bh_scan:
         if not bh_tickers:
             st.warning("Masukkan minimal 1 ticker.")
         else:
+            # Simpan preferensi telegram ke session state sebelum scan
+            # agar tidak hilang saat Streamlit rerun
+            _send_tg = st.session_state.get("bh_send_telegram", True)
+
             bh_prog  = st.progress(0, text="🎯 Memulai Bandar Hunter scan...")
             bh_ph    = st.empty()
 
@@ -4979,12 +4984,21 @@ Karena itu mereka bergerak dengan **pola yang bisa dideteksi**:
             st.session_state["bh_tickers"]    = bh_tickers
 
             actionable = [r for r in bh_results if r.is_actionable and not r.error]
-            if actionable and send_tg_bh:
-                msg = format_bandar_telegram(actionable)
-                if msg:
-                    send_telegram(msg)
-                    bh_ph.success(f"🎯 Telegram terkirim — {len(actionable)} sinyal actionable")
-            elif not actionable:
+            if actionable:
+                if _send_tg:
+                    msg = format_bandar_telegram(actionable)
+                    if msg:
+                        send_telegram(msg)
+                        bh_ph.success(
+                            f"🎯 Telegram terkirim — {len(actionable)} sinyal actionable: "
+                            f"{', '.join(r.ticker for r in actionable)}"
+                        )
+                else:
+                    bh_ph.warning(
+                        f"⚠️ {len(actionable)} sinyal ditemukan tapi Telegram tidak dicentang. "
+                        f"Centang 'Kirim Telegram' dan scan ulang."
+                    )
+            else:
                 bh_ph.info("🎯 Scan selesai — tidak ada sinyal actionable saat ini")
 
     # ── Display results ───────────────────────────────────────
