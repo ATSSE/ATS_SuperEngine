@@ -113,40 +113,10 @@ _telegram_lock = threading.Lock()
 # ============================================================
 # VERSION HISTORY
 # ============================================================
-APP_VERSION  = "V5.6.5"
-APP_UPDATED  = "12 Mei 2026"
+APP_VERSION  = "V5.6.3"
+APP_UPDATED  = "06 Mei 2026"
 
 VERSION_HISTORY = [
-    {
-        "versi":   "V5.6.5",
-        "tanggal": "12 Mei 2026",
-        "tipe":    "Feature — Falcon Macro Resume & Aksi",
-        "ringkasan": "Interpretasi otomatis + kesimpulan aksi Falcon langsung di dashboard setelah Cek Makro",
-        "detail": [
-            "[FEAT #1] Interpretasi per indeks otomatis — narasi dinamis sesuai data real",
-            "  Wall Street: kuat/tipis/lemah dengan reasoning untuk IDX",
-            "  KOSPI: deteksi koreksi dan penjelasan korelasi terbatas ke IDX (bukan chip)",
-            "  Rupiah: interpretasi capital outflow / inflow dengan nilai aktual",
-            "  IHSG: status MA20/MA50 dan kapan Falcon aktif kembali",
-            "[FEAT #2] Kesimpulan Aksi Falcon otomatis per verdict:",
-            "  BEARISH → tabel aksi lengkap + trigger kapan Falcon aktif kembali",
-            "  NEUTRAL → panduan size ½ + seleksi setup",
-            "  BULLISH → panduan full size + scan agresif",
-            "[FEAT #3] Checklist besok pagi (08:30 WIB) sesuai SOP A.1",
-            "  Futures Asia, gap pembukaan, komoditas, SBN 10Y, berita penting",
-        ]
-    },
-    {
-        "versi":   "V5.6.4",
-        "tanggal": "12 Mei 2026",
-        "tipe":    "Feature — Falcon Macro Check SOP A.1",
-        "ringkasan": "Tombol Cek Konteks Makro otomatis di tab Falcon Hunter — fetch data global real-time sesuai SOP A.1",
-        "detail": [
-            "[FEAT #1] get_falcon_macro_context(): fetch Dow, S&P500, Nikkei, KOSPI, IHSG, USD/IDR via yfinance",
-            "[FEAT #2] Verdict makro otomatis BULLISH/NEUTRAL/BEARISH dengan guidance sizing",
-            "[FEAT #3] Tombol Cek Makro (SOP A.1) di row tombol scan Falcon",
-        ]
-    },
     {
         "versi":   "V5.6.3",
         "tanggal": "06 Mei 2026",
@@ -2417,8 +2387,9 @@ def auto_scan_background():
                         st_data = json.load(f)
                 except Exception:
                     st_data = {}
-                st_data["signal_lock"] = sig_lock
-                st_data["last_regime"] = regime   # persist regime dari background scan
+                st_data["signal_lock"]       = sig_lock
+                st_data["last_regime"]       = regime
+                st_data["last_scan_tickers"] = scan_df["Ticker"].tolist() if not scan_df.empty else []
                 tmp_path = STATE_FILE + ".tmp_bg"
                 with open(tmp_path, "w", encoding="utf-8") as f:
                     json.dump(st_data, f, indent=2)
@@ -2771,6 +2742,36 @@ def start_scheduler():
         misfire_grace_time=300,
     )
 
+    # [BH] Bandar Hunter — scan otomatis setiap 15 menit
+    # Universe: ATS candidates (kalau ada) + base watchlist tetap
+    # Tidak tergantung output ATS — radar independen
+    from bandar_hunter import bandar_hunter_job, BANDAR_BASE_WATCHLIST
+    def _bandar_hunter_auto():
+        try:
+            _st = load_state()
+            # Ambil ATS candidates dari state terakhir (bisa kosong)
+            ats_tickers = _st.get("last_scan_tickers", [])[:8]
+        except Exception:
+            ats_tickers = []
+        bandar_hunter_job(
+            ats_tickers    = ats_tickers,
+            send_telegram_fn = send_telegram,
+        )
+
+    scheduler.add_job(
+        func    = _bandar_hunter_auto,
+        trigger = CronTrigger(
+            day_of_week    = "mon-fri",
+            hour           = "9-14",
+            minute         = "10,25,40,55",  # versetzt 5 menit dari intraday refresh
+            timezone       = WIB,
+        ),
+        id               = "bandar_hunter_auto",
+        name             = "ATS Bandar Hunter 15min",
+        replace_existing = True,
+        misfire_grace_time = 60,
+    )
+
     scheduler.start()
 
     # Notifikasi startup
@@ -2784,84 +2785,6 @@ def start_scheduler():
     return scheduler
 
 _scheduler = start_scheduler()
-
-# ============================================================
-# 🌍 FALCON MACRO CONTEXT — SOP A.1
-# Fetch data makro global real-time untuk checklist Falcon
-# ============================================================
-
-def get_falcon_macro_context() -> dict:
-    """
-    Fetch data makro sesuai SOP Falcon A.1:
-    - Wall Street semalam (Dow, S&P500)
-    - Asia pagi (Nikkei, KOSPI)
-    - IHSG hari ini
-    - USD/IDR Rupiah
-    Return dict lengkap dengan verdict makro Falcon.
-    """
-    result = {
-        "dow":    {"value": None, "change": 0.0, "status": "flat"},
-        "sp500":  {"value": None, "change": 0.0, "status": "flat"},
-        "nikkei": {"value": None, "change": 0.0, "status": "flat"},
-        "kospi":  {"value": None, "change": 0.0, "status": "flat"},
-        "ihsg":   {"value": None, "change": 0.0, "status": "flat"},
-        "usdidr": {"value": None, "change": 0.0, "status": "flat"},
-        "verdict": "NEUTRAL",
-        "verdict_reason": "Data belum lengkap",
-        "fetch_time": datetime.now(WIB).strftime("%H:%M WIB"),
-    }
-
-    ticker_map = {
-        "dow":    "^DJI",
-        "sp500":  "^GSPC",
-        "nikkei": "^N225",
-        "kospi":  "^KS11",
-        "ihsg":   "^JKSE",
-        "usdidr": "USDIDR=X",
-    }
-
-    for key, tkr in ticker_map.items():
-        try:
-            df = yf.download(tkr, period="5d", interval="1d",
-                             progress=False, auto_adjust=True)
-            if df is None or len(df) < 2:
-                continue
-            cl = df["Close"].squeeze()
-            last = float(cl.iloc[-1])
-            prev = float(cl.iloc[-2])
-            chg  = (last - prev) / prev * 100 if prev > 0 else 0.0
-            status = "up" if chg > 0.3 else ("down" if chg < -0.3 else "flat")
-            result[key] = {"value": last, "change": chg, "status": status}
-        except Exception as e:
-            LOG.warning(f"macro_fetch {tkr}: {e}")
-
-    # ── Verdict logic ────────────────────────────────────────
-    global_keys    = ["dow", "sp500", "nikkei", "kospi"]
-    n_up   = sum(1 for k in global_keys if result[k]["status"] == "up")
-    n_down = sum(1 for k in global_keys if result[k]["status"] == "down")
-
-    if n_down >= 3:
-        verdict = "BEARISH"
-        reason  = f"{n_down}/4 indeks global turun — sentimen negatif, Falcon waspada"
-    elif n_up >= 3:
-        verdict = "BULLISH"
-        reason  = f"{n_up}/4 indeks global naik — sentimen positif, Falcon aktif"
-    else:
-        verdict = "NEUTRAL"
-        reason  = f"Sentimen global mixed ({n_up} naik, {n_down} turun) — Falcon selektif"
-
-    # IHSG override — paling menentukan untuk IDX
-    ihsg_st = st.session_state.get("falcon_ihsg_status", "")
-    if ihsg_st == "BEARISH":
-        verdict = "BEARISH"
-        reason  = "IHSG BEARISH (di bawah MA20 & MA50) — Falcon istirahat, paper trade only"
-    elif ihsg_st == "BULLISH" and verdict == "BULLISH":
-        reason = f"IHSG BULLISH + {n_up}/4 global naik — kondisi ideal, full size"
-
-    result["verdict"]        = verdict
-    result["verdict_reason"] = reason
-    return result
-
 
 # ============================================================
 # UI
@@ -3197,7 +3120,7 @@ header_html = (
 
 st.markdown(header_html, unsafe_allow_html=True)
 
-tabs = st.tabs(["📖 HOW TO USE", "📊 TRADING DESK", "💼 ACCOUNT", "📋 REPORT", "🕌 ISSI CHECK", "🔬 DEEP ANALYSIS", "🦅 FALCON HUNTER"])
+tabs = st.tabs(["📖 HOW TO USE", "📊 TRADING DESK", "💼 ACCOUNT", "📋 REPORT", "🕌 ISSI CHECK", "🔬 DEEP ANALYSIS", "🦅 FALCON HUNTER", "🎯 BANDAR HUNTER"])
 
 # ─────────────────────────────────────────────────────────────
 # TAB 0 — HOW TO USE
@@ -3630,6 +3553,51 @@ itu sinyal paling kuat. Dua sistem berbeda dengan logika berbeda, tapi setuju. C
     )
 
 
+    # ── Bandar Hunter How To Use ───────────────────────────────
+    st.markdown("---")
+    st.markdown("## 🎯 Panduan Bandar Hunter")
+    st.info(
+        "**Bandar Hunter** adalah detector pergerakan institusional berbasis data 5 menit. "
+        "Berjalan terpisah dari ATS dan Falcon. Tujuannya bukan memberikan sinyal beli/jual, "
+        "tapi **mendidik kamu membaca jejak pergerakan uang besar** di market IDX."
+    )
+
+    bh_ed1, bh_ed2 = st.columns(2)
+    with bh_ed1:
+        st.markdown("""
+**🔄 4 Fase Siklus yang Dideteksi:**
+
+| Sinyal | Fase | Aksi |
+|---|---|---|
+| ⚡ Initial Markup | Bandar push harga | Monitor entry H1 |
+| 🤫 Akumulasi Senyap | Bandar kumpul saham | Setup entry terbaik |
+| 🔊 Volume Anomali | Arah belum jelas | Tunggu konfirmasi |
+| 🔴 Distribusi | Bandar mulai jual | Hindari entry baru |
+        """)
+    with bh_ed2:
+        st.markdown("""
+**⚙️ Cara Pakai:**
+
+1. Tab **🎯 Bandar Hunter** — ticker otomatis dari kandidat ATS scan
+2. Klik **Scan Bandar Sekarang**
+3. Lihat sinyal yang muncul + baca edukasi di setiap card
+4. **Konfirmasi di D1 chart** sebelum eksekusi apapun
+5. Telegram alert otomatis kalau ada sinyal actionable
+
+**❗ Yang tidak boleh:**
+- Langsung entry hanya dari sinyal Bandar Hunter
+- Abaikan SL karena "bandar pasti lanjut naik"
+- Trading di luar jam 09:30–15:00 WIB
+        """)
+
+    st.warning(
+        "⚠️ **Keterbatasan:** Bandar Hunter menggunakan data yfinance 5m "
+        "sebagai **proxy** pergerakan institusional. "
+        "Ini bukan broker flow data sesungguhnya. "
+        "False positive mungkin terjadi di saham tidak likuid."
+    )
+
+    # ── Changelog ──────────────────────────────────────────────
     # ── Changelog ──────────────────────────────────────────────
     st.markdown("---")
     st.markdown("### 📋 Riwayat Update & Versi")
@@ -4674,206 +4642,14 @@ with tabs[6]:
         watchlist_input = [t.strip().upper() for t in wl_raw.split(",") if t.strip()]
 
     # ── Scan button ───────────────────────────────────────────
-    col_btn1, col_btn2, col_btn3 = st.columns([1.2, 1, 1.2])
+    col_btn1, col_btn2, _ = st.columns([1, 1, 3])
     with col_btn1:
         do_scan = st.button("🦅 Jalankan Falcon Scan", type="primary",
                             use_container_width=True)
     with col_btn2:
         only_setup = st.checkbox("Tampilkan setup saja", value=True)
-    with col_btn3:
-        do_macro = st.button("🌍 Cek Makro (SOP A.1)",
-                             use_container_width=True,
-                             help="Fetch data Dow, Nikkei, KOSPI, IHSG, Rupiah — sesuai checklist SOP A.1")
 
-    # ── Macro Check SOP A.1 ───────────────────────────────────
-    if do_macro:
-        with st.spinner("🌍 Mengambil data makro global..."):
-            macro = get_falcon_macro_context()
-        st.session_state["falcon_macro"] = macro
-
-    if "falcon_macro" in st.session_state:
-        macro = st.session_state["falcon_macro"]
-        verdict    = macro["verdict"]
-        v_color    = {"BULLISH": "success", "NEUTRAL": "warning", "BEARISH": "error"}
-        v_emoji    = {"BULLISH": "🟢", "NEUTRAL": "🟡", "BEARISH": "🔴"}
-        v_action   = {
-            "BULLISH": "Full size, scan agresif, target normal.",
-            "NEUTRAL": "Size ½ — hanya ambil Falcon Score tertinggi.",
-            "BEARISH": "🛑 Falcon istirahat — paper trade only. Jangan entry real.",
-        }
-
-        with st.expander(
-            f"🌍 Konteks Makro SOP A.1 — {v_emoji.get(verdict,'')} {verdict} "
-            f"| {macro['fetch_time']}",
-            expanded=True,
-        ):
-            # Verdict banner
-            getattr(st, v_color.get(verdict, "info"))(
-                f"**{v_emoji.get(verdict,'')} Verdict Makro Falcon: {verdict}** — "
-                f"{macro['verdict_reason']}\n\n"
-                f"📌 Panduan: {v_action.get(verdict,'')}"
-            )
-
-            # Metrics row 1: Wall Street
-            st.markdown("**📊 Wall Street semalam**")
-            mw1, mw2 = st.columns(2)
-
-            def _fmt_val(d: dict, is_currency: bool = False) -> str:
-                if d["value"] is None: return "N/A"
-                v = d["value"]
-                return f"{v:,.0f}" if not is_currency else f"Rp {v:,.0f}"
-
-            def _delta_str(d: dict) -> str:
-                if d["value"] is None: return ""
-                sign = "▲" if d["status"] == "up" else ("▼" if d["status"] == "down" else "→")
-                return f"{sign} {d['change']:+.2f}%"
-
-            mw1.metric("Dow Jones",  _fmt_val(macro["dow"]),   _delta_str(macro["dow"]))
-            mw2.metric("S&P 500",    _fmt_val(macro["sp500"]), _delta_str(macro["sp500"]))
-
-            st.markdown("**🌏 Asia pagi ini**")
-            ma1, ma2 = st.columns(2)
-            ma1.metric("Nikkei 225", _fmt_val(macro["nikkei"]), _delta_str(macro["nikkei"]))
-            ma2.metric("KOSPI",      _fmt_val(macro["kospi"]),  _delta_str(macro["kospi"]))
-
-            st.markdown("**💱 Rupiah & IHSG**")
-            mr1, mr2 = st.columns(2)
-            mr1.metric("USD/IDR",
-                       f"Rp {macro['usdidr']['value']:,.0f}" if macro["usdidr"]["value"] else "N/A",
-                       _delta_str(macro["usdidr"]),
-                       delta_color="inverse")   # rupiah melemah = negatif
-            mr2.metric("IHSG",
-                       _fmt_val(macro["ihsg"]),
-                       _delta_str(macro["ihsg"]))
-
-            # ── Interpretasi per indeks ──────────────────────
-            st.markdown("---")
-            st.markdown("**🔍 Interpretasi Falcon**")
-
-            interp_items = []
-
-            # Wall Street
-            ws_avg = (macro["dow"]["change"] + macro["sp500"]["change"]) / 2
-            if ws_avg > 1.0:
-                interp_items.append(("🟢", f"Wall Street naik kuat (avg {ws_avg:+.2f}%) — sentimen global positif, mendukung Asia pagi ini."))
-            elif ws_avg > 0.1:
-                interp_items.append(("🟡", f"Wall Street naik tipis (avg {ws_avg:+.2f}%) — tidak ada dorongan kuat. Bukan katalis bullish yang meyakinkan."))
-            elif ws_avg < -1.0:
-                interp_items.append(("🔴", f"Wall Street turun tajam (avg {ws_avg:+.2f}%) — tekanan jual dari global, waspada IDX pagi."))
-            else:
-                interp_items.append(("🔴", f"Wall Street melemah (avg {ws_avg:+.2f}%) — sentimen negatif ringan untuk Asia."))
-
-            # Nikkei
-            n_chg = macro["nikkei"]["change"]
-            if macro["nikkei"]["value"] is not None:
-                if n_chg > 1.0:
-                    interp_items.append(("🟢", f"Nikkei +{n_chg:.2f}% — Jepang kuat, mendukung sentimen Asia termasuk IDX."))
-                elif n_chg > 0:
-                    interp_items.append(("🟡", f"Nikkei +{n_chg:.2f}% — positif tipis, kontribusi terbatas ke IDX."))
-                else:
-                    interp_items.append(("🔴", f"Nikkei {n_chg:+.2f}% — Jepang melemah, tambah tekanan ke Asia."))
-
-            # KOSPI
-            k_chg = macro["kospi"]["change"]
-            if macro["kospi"]["value"] is not None:
-                if k_chg < -2.0:
-                    interp_items.append(("🔴", f"KOSPI {k_chg:+.2f}% — Korea koreksi tajam. Perhatikan: rally KOSPI biasanya driven chip/AI yang tidak ada di IDX, sehingga korelasinya ke IHSG terbatas."))
-                elif k_chg > 2.0:
-                    interp_items.append(("🟢", f"KOSPI {k_chg:+.2f}% — Korea terbang. Namun jika driven oleh chip/semikonduktor, dampak ke IDX minimal karena sektor ini tidak ada di bursa Indonesia."))
-                elif k_chg > 0:
-                    interp_items.append(("🟡", f"KOSPI {k_chg:+.2f}% — Korea naik tipis, sentimen Asia oke."))
-                else:
-                    interp_items.append(("🔴", f"KOSPI {k_chg:+.2f}% — Korea melemah, tambah sentimen negatif regional."))
-
-            # Rupiah
-            idr_chg = macro["usdidr"]["change"]
-            if macro["usdidr"]["value"] is not None:
-                idr_val = macro["usdidr"]["value"]
-                if idr_chg > 0.5:
-                    interp_items.append(("🔴", f"Rupiah melemah {idr_chg:+.2f}% ke Rp {idr_val:,.0f} — sinyal asing masih keluar dari IDX. Capital outflow belum berhenti → tekanan jual di saham unggulan."))
-                elif idr_chg > 0:
-                    interp_items.append(("🟡", f"Rupiah sedikit melemah ({idr_chg:+.2f}%) — perlu dipantau, tapi belum alarm."))
-                elif idr_chg < -0.3:
-                    interp_items.append(("🟢", f"Rupiah menguat {idr_chg:+.2f}% ke Rp {idr_val:,.0f} — positif untuk IDX, asing cenderung masuk."))
-                else:
-                    interp_items.append(("🟡", f"Rupiah relatif stabil ({idr_chg:+.2f}%) — faktor netral."))
-
-            # IHSG
-            ihsg_chg = macro["ihsg"]["change"]
-            ihsg_val  = macro["ihsg"]["value"]
-            ihsg_st   = st.session_state.get("falcon_ihsg_status", "NEUTRAL")
-            if ihsg_val is not None:
-                if ihsg_st == "BEARISH":
-                    interp_items.append(("🔴", f"IHSG {ihsg_chg:+.2f}% di {ihsg_val:,.0f} — masih di bawah MA20 & MA50. Status BEARISH. Butuh recovery ke atas MA20 dulu untuk Falcon aktif kembali."))
-                elif ihsg_st == "NEUTRAL":
-                    interp_items.append(("🟡", f"IHSG {ihsg_chg:+.2f}% di {ihsg_val:,.0f} — NEUTRAL, di atas salah satu MA. Falcon bisa jalan dengan size ½."))
-                else:
-                    interp_items.append(("🟢", f"IHSG {ihsg_chg:+.2f}% di {ihsg_val:,.0f} — BULLISH, di atas MA20 & MA50. Kondisi ideal untuk Falcon full size."))
-
-            for emoji, text in interp_items:
-                st.markdown(f"{emoji} {text}")
-
-            # ── Kesimpulan Aksi ──────────────────────────────
-            st.markdown("---")
-            st.markdown("**🎯 Kesimpulan Aksi Falcon**")
-
-            if verdict == "BEARISH":
-                st.error(
-                    "🛑 **FALCON ISTIRAHAT — Tidak ada real trade besok**\n\n"
-                    "| Keputusan | Status |\n"
-                    "|---|---|\n"
-                    "| Real trade | ❌ TIDAK — IHSG bearish, SOP melarang |\n"
-                    "| Paper trade | ✅ Boleh — catat setup untuk latihan |\n"
-                    "| Position size | — Nihil |\n"
-                    "| Watchlist | 👀 Pantau kandidat kuat untuk entry saat kondisi membaik |\n"
-                    "| Posisi lama mendekati SL | ⚠️ Biarkan hard stop bekerja, jangan average down |"
-                )
-                st.markdown("**🔓 Kapan Falcon aktif kembali?**")
-                ihsg_val_str = f"{ihsg_val:,.0f}" if ihsg_val else "saat ini"
-                st.info(
-                    f"- IHSG kembali di atas **MA20 atau MA50** → status NEUTRAL → Falcon aktif size ½\n"
-                    f"- IHSG di atas **MA20 dan MA50** → status BULLISH → Falcon full size\n"
-                    f"- Rupiah menguat kembali → konfirmasi asing masuk → sentimen membaik"
-                )
-
-            elif verdict == "NEUTRAL":
-                st.warning(
-                    "🟡 **SIZE ½ — Selektif, hanya setup terbaik**\n\n"
-                    "| Keputusan | Status |\n"
-                    "|---|---|\n"
-                    "| Real trade | ✅ Boleh — tapi size ½ dari normal |\n"
-                    "| Pilih setup | Hanya Falcon Score tertinggi (≥ 0.60) |\n"
-                    "| Max posisi | 1–2 saja, bukan 3 |\n"
-                    "| Watchlist | Fokus BRK/BNC dengan volume konfirmasi kuat |"
-                )
-
-            else:  # BULLISH
-                st.success(
-                    "🟢 **FULL SIZE — Kondisi ideal, scan agresif**\n\n"
-                    "| Keputusan | Status |\n"
-                    "|---|---|\n"
-                    "| Real trade | ✅ Boleh — full size sesuai SOP |\n"
-                    "| Pilih setup | BRK prioritas, BNC sebagai pelengkap |\n"
-                    "| Max posisi | Hingga 3 posisi simultan |\n"
-                    "| Target | T1 dan T2 normal sesuai R-multiple |"
-                )
-
-            # ── Checklist pagi besok ─────────────────────────
-            st.markdown("---")
-            st.markdown("**☀️ Checklist Besok Pagi (08:30 WIB)**")
-            st.markdown(
-                "- [ ] Cek **futures Asia & USD/IDR** — kalau jeblok semua, Falcon mundur\n"
-                "- [ ] Hitung **gap pembukaan** kandidat: >2% → SKIP\n"
-                "- [ ] **Komoditas** (CPO, batu bara, minyak) → cek Investing.com\n"
-                "- [ ] **Yield SBN 10Y** → cek DJPPR / Bloomberg Indonesia\n"
-                "- [ ] **Berita hari ini** — ada FOMC / BI Rate / data inflasi? → *no-trade day*"
-            )
-            st.caption(
-                f"Data dari yfinance — diambil {macro['fetch_time']}. "
-                "Klik tombol lagi untuk refresh."
-            )
-
-    st.markdown("---")
+    # ── Run scan ──────────────────────────────────────────────
     if do_scan:
         falcon_params = FalconParams(
             vol_breakout_mult = vol_brk,
@@ -5047,6 +4823,227 @@ with tabs[6]:
 - ❌ IHSG BEARISH → Falcon istirahat
 """)
 
+
+
+# ─────────────────────────────────────────────────────────────
+# TAB 7 — 🎯 BANDAR HUNTER
+# ─────────────────────────────────────────────────────────────
+with tabs[7]:
+    from bandar_hunter import (
+        run_bandar_scan, bandar_hunter_job,
+        format_bandar_telegram, BandarSignal,
+        SIGNAL_EDUCATION,
+    )
+
+    st.markdown("## 🎯 Bandar Hunter — Institutional Movement Detector")
+    st.caption(
+        "Deteksi pergerakan institusional via anomali volume + price pada data 5 menit. "
+        "Input dari kandidat ATS scan hari ini. Bukan broker flow — ini adalah proxy."
+    )
+
+    # ── Edukasi banner ─────────────────────────────────────────
+    with st.expander("📚 Memahami Pergerakan Bandar — Baca Dulu", expanded=False):
+        st.markdown("""
+### Bagaimana Bandar Bergerak?
+
+Institusi / bandar tidak bisa membeli jutaan lembar saham sekaligus — 
+harga akan melonjak sendiri sebelum mereka selesai akumulasi. 
+Karena itu mereka bergerak dengan **pola yang bisa dideteksi**:
+
+---
+
+#### 🔄 4 Fase Siklus Bandar (Wyckoff)
+
+| Fase | Nama | Ciri Volume | Ciri Harga | Aksi |
+|---|---|---|---|---|
+| 1 | **Akumulasi** | Naik perlahan, konsisten | Sideways, volatilitas rendah | Monitor — siapkan entry |
+| 2 | **Markup Awal** | Meledak tiba-tiba | Loncat impulsif, minim pullback | ⚡ Entry zone terbaik |
+| 3 | **Distribusi** | Naik tapi mulai turun | Harga masih naik/flat | ⚠️ Profit taking |
+| 4 | **Markdown** | Rendah atau spike sesaat | Turun konsisten | ❌ Jangan masuk |
+
+---
+
+#### 🔍 Yang Bisa Dideteksi di Sini (Data 5 Menit)
+
+**⚡ Initial Markup** — Paling actionable
+> Volume meledak 4×+ dalam satu candle, harga loncat >1% dalam 15 menit, 
+> tidak ada pullback signifikan. Ini momen bandar mulai *push* harga.
+
+**🤫 Akumulasi Senyap** — Setup terbaik untuk entry
+> Volume di atas rata-rata 3-5 candle berturut-turut, harga bergerak 
+> sideways atau naik tipis. Bandar sedang *kumpulkan* saham diam-diam.
+
+**🔊 Volume Anomali** — Perlu konfirmasi arah
+> Volume ekstrem (5×+) tapi harga tidak bergerak. Bisa akumulasi, 
+> bisa distribusi. **Tunggu konfirmasi** sebelum aksi apapun.
+
+**🔴 Distribusi** — Sinyal waspada
+> Harga masih naik tapi volume mulai turun. Bandar sudah mulai *jual* 
+> ke retail yang FOMO. Hindari entry baru.
+
+---
+
+#### ⚠️ Keterbatasan yang Harus Dipahami
+
+1. **Ini bukan data broker flow** — broker flow (RTI/Stockbit) tidak tersedia
+2. **False positive di saham tidak likuid** — spread lebar bisa memicu sinyal palsu
+3. **Selalu konfirmasi di D1** sebelum eksekusi — jangan trading hanya dari sinyal ini
+4. **Ini adalah alat deteksi, bukan rekomendasi beli/jual**
+        """)
+
+    st.markdown("---")
+
+    # ── Input ticker ───────────────────────────────────────────
+    col_inp1, col_inp2 = st.columns([2, 1])
+
+    with col_inp1:
+        # Auto-populate dari hasil scan ATS hari ini
+        ats_candidates = []
+        if "scan_result" in st.session_state and not st.session_state.scan_result.empty:
+            ats_candidates = st.session_state.scan_result["Ticker"].tolist()[:8]
+
+        default_tickers = (
+            ", ".join(ats_candidates) if ats_candidates
+            else "BRIS, ADRO, ANTM, TLKM, UNTR, INDF, BBRI, BMRI"
+        )
+
+        bh_tickers_raw = st.text_input(
+            "📌 Ticker yang dipantau (pisahkan dengan koma)",
+            value=default_tickers,
+            help="Default: kandidat dari ATS scan hari ini. Edit sesuai kebutuhan."
+        )
+        bh_tickers = [t.strip().upper() for t in bh_tickers_raw.split(",") if t.strip()]
+
+    with col_inp2:
+        min_signal_filter = st.selectbox(
+            "Filter minimum sinyal",
+            options=["MARKUP_AWAL", "AKUMULASI_SENYAP", "VOLUME_ANOMALI", "NONE"],
+            index=1,
+            format_func=lambda x: {
+                "MARKUP_AWAL"     : "⚡ Initial Markup saja",
+                "AKUMULASI_SENYAP": "🤫 Akumulasi + Markup",
+                "VOLUME_ANOMALI"  : "🔊 Semua anomali",
+                "NONE"            : "😴 Semua (termasuk normal)",
+            }.get(x, x)
+        )
+
+    col_btn_bh1, col_btn_bh2, _ = st.columns([1, 1, 3])
+    with col_btn_bh1:
+        do_bh_scan = st.button("🎯 Scan Bandar Sekarang",
+                               type="primary", use_container_width=True)
+    with col_btn_bh2:
+        send_tg_bh = st.checkbox("Kirim Telegram", value=True)
+
+    # ── Run scan ──────────────────────────────────────────────
+    if do_bh_scan:
+        if not bh_tickers:
+            st.warning("Masukkan minimal 1 ticker.")
+        else:
+            bh_prog  = st.progress(0, text="🎯 Memulai Bandar Hunter scan...")
+            bh_ph    = st.empty()
+
+            def _bh_progress(i, n, tkr):
+                pct = int(i / n * 100) if n > 0 else 100
+                bh_prog.progress(pct, text=f"🎯 Scanning {tkr}... ({i}/{n})")
+
+            bh_results = run_bandar_scan(
+                tickers    = bh_tickers,
+                min_signal = min_signal_filter,
+                progress_cb= _bh_progress,
+            )
+            bh_prog.empty()
+
+            st.session_state["bh_results"]    = bh_results
+            st.session_state["bh_scan_time"]  = datetime.now(WIB).strftime("%H:%M WIB")
+            st.session_state["bh_tickers"]    = bh_tickers
+
+            actionable = [r for r in bh_results if r.is_actionable and not r.error]
+            if actionable and send_tg_bh:
+                msg = format_bandar_telegram(actionable)
+                if msg:
+                    send_telegram(msg)
+                    bh_ph.success(f"🎯 Telegram terkirim — {len(actionable)} sinyal actionable")
+            elif not actionable:
+                bh_ph.info("🎯 Scan selesai — tidak ada sinyal actionable saat ini")
+
+    # ── Display results ───────────────────────────────────────
+    if "bh_results" in st.session_state and st.session_state.bh_results:
+        bh_results  = st.session_state["bh_results"]
+        bh_scantime = st.session_state.get("bh_scan_time", "-")
+
+        st.caption(f"Hasil scan terakhir: {bh_scantime} | {len(bh_results)} ticker dipantau")
+        st.markdown("---")
+
+        # ── Sinyal cards ───────────────────────────────────────
+        actionable = [r for r in bh_results if r.is_actionable and not r.error]
+        if actionable:
+            st.markdown("### 🚨 Sinyal Actionable")
+            for s in actionable:
+                edu = s.education
+                conf_color = {"HIGH": "🔴", "MEDIUM": "🟡", "LOW": "⚪"}
+                c_em = conf_color.get(s.confidence, "⚪")
+
+                with st.container(border=True):
+                    bh_c1, bh_c2, bh_c3, bh_c4 = st.columns([2, 1.5, 1.5, 2])
+                    bh_c1.markdown(f"### {edu['icon']} {s.ticker}")
+                    bh_c1.markdown(f"**{edu['label']}**")
+                    bh_c1.caption(f"{c_em} Confidence: {s.confidence}")
+                    bh_c2.metric("Harga", f"Rp {int(s.last_price):,}")
+                    bh_c2.metric("Vol Ratio", f"{s.vol_ratio:.1f}×")
+                    bh_c3.metric("Chg 3 candle", f"{s.price_chg_3c:+.2f}%")
+                    bh_c3.metric("Vol Trend", s.vol_trend)
+                    bh_c4.info(f"**Artinya:** {edu['arti']}")
+                    bh_c4.success(f"**Aksi:** {edu['aksi']}")
+
+                    with st.expander("📊 Detail + Edukasi"):
+                        d1, d2, d3 = st.columns(3)
+                        d1.markdown(f"**Pullback ratio:** {s.pullback:.2f}")
+                        d1.markdown(f"**Consec vol naik:** {s.consec_above} candle")
+                        d1.markdown(f"**FVG:** {'✅ Ada' if s.fvg else '❌ Tidak'}")
+                        d2.markdown(f"**Chg 1 candle:** {s.price_chg_1c:+.2f}%")
+                        d2.markdown(f"**Scan time:** {s.timestamp}")
+                        d3.warning(f"⚠️ **Risiko:** {edu['risiko']}")
+                        d3.markdown(f"**Pola:** {edu['pola']}")
+
+        # ── Full summary table ─────────────────────────────────
+        st.markdown("---")
+        st.markdown("### 📊 Semua Ticker yang Dipantau")
+
+        tbl_data = []
+        for s in bh_results:
+            edu = s.education
+            tbl_data.append({
+                "Ticker"    : s.ticker,
+                "Sinyal"    : f"{edu['icon']} {edu['label']}",
+                "Confidence": s.confidence,
+                "Harga"     : f"Rp {int(s.last_price):,}" if s.last_price else "-",
+                "Vol×"      : f"{s.vol_ratio:.1f}×",
+                "Chg 3C"    : f"{s.price_chg_3c:+.2f}%",
+                "Vol Trend" : s.vol_trend,
+                "Consec↑"   : s.consec_above,
+                "FVG"       : "✅" if s.fvg else "-",
+                "Pullback"  : f"{s.pullback:.2f}",
+                "Aksi"      : edu["aksi"] if s.is_actionable else "-",
+                "Error"     : s.error if s.error else "✅",
+            })
+
+        df_bh = pd.DataFrame(tbl_data)
+        st.dataframe(df_bh, use_container_width=True, hide_index=True)
+
+        # ── Legenda ────────────────────────────────────────────
+        st.markdown("---")
+        with st.expander("📖 Legenda Kolom", expanded=False):
+            st.markdown("""
+| Kolom | Penjelasan |
+|---|---|
+| **Vol×** | Rasio volume candle terakhir vs rata-rata 20 candle. >4× = anomali |
+| **Chg 3C** | Perubahan harga 3 candle (15 menit) terakhir |
+| **Vol Trend** | Apakah volume 5 candle terakhir NAIK, TURUN, atau FLAT |
+| **Consec↑** | Berapa candle berturut-turut volume di atas rata-rata |
+| **FVG** | Fair Value Gap — ada gap harga yang belum terisi |
+| **Pullback** | 0.0 = tidak ada pullback (bullish). 1.0 = full pullback (bearish) |
+| **Confidence** | HIGH = semua kondisi kuat. MEDIUM = sebagian. LOW = lemah |
+            """)
 
 st.divider()
 st.caption(
