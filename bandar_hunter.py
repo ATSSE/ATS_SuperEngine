@@ -425,3 +425,210 @@ def format_bandar_telegram(signals: list[BandarSignal]) -> str:
     lines.append("─" * 28)
     lines.append("_Selalu konfirmasi di D1 sebelum eksekusi_ 🎯")
     return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────────────────────
+# UNDERVALUED + ACCUMULATION SCANNER
+# ─────────────────────────────────────────────────────────────
+# Livermore: "The line of least resistance — find where smart
+# money is quietly accumulating at a discount."
+# ─────────────────────────────────────────────────────────────
+
+def scan_undervalued(
+    tickers     : list[str],
+    discount_min: float = 25.0,   # min diskon dari 52W high (%)
+    rsi_max     : float = 45.0,   # RSI D1 maksimum
+    vol_days    : int   = 3,       # min hari berturut vol di atas avg
+    progress_cb = None,
+) -> list[dict]:
+    """
+    Scan saham yang undervalued secara teknikal DAN sedang diakumulasi.
+
+    Grading:
+        A = semua 3 kriteria terpenuhi (discount + RSI + vol akumulasi)
+        B = 2 dari 3 kriteria
+        C = 1 kriteria
+        - = tidak ada kriteria (tidak ditampilkan)
+
+    Return list of dict — bukan dataclass agar fleksibel untuk UI.
+    """
+    results = []
+    n = len(tickers)
+
+    for i, ticker in enumerate(tickers):
+        if progress_cb:
+            progress_cb(i, n, ticker)
+
+        tkr_jk = ticker if ticker.endswith(".JK") else f"{ticker}.JK"
+        try:
+            df = yf.download(
+                tkr_jk, period="260d", interval="1d",
+                progress=False, auto_adjust=True
+            )
+            if df is None or len(df) < 60:
+                time.sleep(0.05)
+                continue
+
+            cl = df["Close"].squeeze().astype(float)
+            vl = df["Volume"].squeeze().astype(float)
+
+            last_price = float(cl.iloc[-1])
+            high_52w   = float(cl.tail(252).max())
+            low_52w    = float(cl.tail(252).min())
+
+            # ── Diskon dari 52W high ──────────────────────────
+            discount_52w = ((high_52w - last_price) / high_52w * 100
+                            if high_52w > 0 else 0.0)
+
+            # ── RSI 14 D1 ─────────────────────────────────────
+            delta  = cl.diff()
+            gain   = delta.clip(lower=0).rolling(14).mean()
+            loss   = (-delta.clip(upper=0)).rolling(14).mean()
+            rs     = gain / loss.replace(0, np.nan)
+            rsi_d1 = float((100 - 100 / (1 + rs)).iloc[-1])
+
+            # ── Volume akumulasi D1 ───────────────────────────
+            vol_avg20 = float(vl.rolling(20).mean().iloc[-1])
+            consec_vol = 0
+            for v in reversed(vl.values[-10:]):
+                if v > vol_avg20:
+                    consec_vol += 1
+                else:
+                    break
+
+            # Price trend saat volume naik (sideways atau naik = akumulasi)
+            price_chg_5d = ((last_price - float(cl.iloc[-6])) / float(cl.iloc[-6]) * 100
+                            if len(cl) >= 6 else 0.0)
+
+            vol_accumulating = (consec_vol >= vol_days and
+                                price_chg_5d >= -2.0)   # harga tidak collapse
+
+            # ── Vol trend label ───────────────────────────────
+            vol_ma5_now  = float(vl.iloc[-5:].mean())
+            vol_ma5_prev = float(vl.iloc[-10:-5].mean()) if len(vl) >= 10 else vol_ma5_now
+            if vol_ma5_now > vol_ma5_prev * 1.1:
+                vol_trend = "NAIK"
+            elif vol_ma5_now < vol_ma5_prev * 0.9:
+                vol_trend = "TURUN"
+            else:
+                vol_trend = "FLAT"
+
+            # ── Bandar score (reuse existing logic) ──────────
+            bh_sig = _detect_bandar(ticker)
+            bandar_score_proxy = (
+                2 if bh_sig.signal_type in ("MARKUP_AWAL", "AKUMULASI_SENYAP") else
+                1 if bh_sig.signal_type == "VOLUME_ANOMALI" else 0
+            )
+
+            # ── PBV dari yfinance (kalau tersedia) ────────────
+            pbv = None
+            try:
+                info = yf.Ticker(tkr_jk).info
+                pbv_raw = info.get("priceToBook")
+                if pbv_raw and pbv_raw > 0:
+                    pbv = round(float(pbv_raw), 2)
+            except Exception:
+                pass
+
+            # ── Scoring dan grading ───────────────────────────
+            crit_discount = discount_52w >= discount_min
+            crit_rsi      = rsi_d1 <= rsi_max
+            crit_vol      = vol_accumulating
+
+            score = sum([crit_discount, crit_rsi, crit_vol])
+            if score == 0:
+                time.sleep(0.05)
+                continue
+
+            grade = "A" if score == 3 else "B" if score == 2 else "C"
+
+            # ── Fase label ────────────────────────────────────
+            if grade == "A" and vol_accumulating:
+                phase = "🤫 Akumulasi Diam-Diam"
+            elif crit_rsi and crit_discount:
+                phase = "🔍 Potensi Reversal"
+            elif crit_discount and crit_vol:
+                phase = "📦 Akumulasi di Diskon"
+            else:
+                phase = "👀 Monitor"
+
+            # ── Rationale ─────────────────────────────────────
+            reasons = []
+            if crit_discount:
+                reasons.append(f"diskon {discount_52w:.0f}% dari 52W high")
+            if crit_rsi:
+                reasons.append(f"RSI {rsi_d1:.0f} oversold")
+            if crit_vol:
+                reasons.append(f"vol naik {consec_vol} hari berturut")
+            rationale = " + ".join(reasons)
+
+            # ── Sektor ───────────────────────────────────────
+            from config.universe import get_sector
+            sector = get_sector(ticker)
+
+            results.append({
+                "ticker"       : ticker,
+                "grade"        : grade,
+                "sector"       : sector,
+                "price"        : round(last_price, 0),
+                "high_52w"     : round(high_52w, 0),
+                "low_52w"      : round(low_52w, 0),
+                "discount_52w" : round(discount_52w, 1),
+                "rsi"          : round(rsi_d1, 1),
+                "vol_trend"    : vol_trend,
+                "consec_vol"   : consec_vol,
+                "bandar_score" : bandar_score_proxy,
+                "pbv"          : pbv,
+                "phase"        : phase,
+                "rationale"    : rationale,
+                "score"        : score,
+            })
+
+        except Exception as e:
+            LOG.warning(f"UV scan {ticker}: {e}")
+
+        time.sleep(0.08)
+
+    if progress_cb:
+        progress_cb(n, n, "selesai")
+
+    # Sort: grade A dulu, lalu score, lalu discount
+    grade_order = {"A": 3, "B": 2, "C": 1}
+    results.sort(
+        key=lambda r: (grade_order.get(r["grade"], 0),
+                       r["score"], r["discount_52w"]),
+        reverse=True
+    )
+    return results
+
+
+def format_uv_telegram(results: list[dict]) -> str:
+    """Format Telegram untuk hasil Undervalued scanner."""
+    if not results:
+        return ""
+
+    ts    = datetime.now(WIB).strftime("%d %b %Y %H:%M WIB")
+    grade_em = {"A": "🔴", "B": "🟡", "C": "⚪"}
+
+    lines = [
+        f"🔍 *UNDERVALUED + AKUMULASI*",
+        f"{'─' * 28}",
+        f"⏰ {ts}",
+        f"{'─' * 28}",
+    ]
+
+    for r in results:
+        em = grade_em.get(r["grade"], "⚪")
+        lines.append(
+            f"{em} *{r['ticker']}* [Grade {r['grade']}] — {r['sector']}\n"
+            f"   💰 Rp {int(r['price']):,} | Diskon {r['discount_52w']:.0f}% dari 52W high\n"
+            f"   📊 RSI: {r['rsi']:.0f} | Vol: {r['vol_trend']} | Bandar: {r['bandar_score']}/2\n"
+            f"   📌 {r['phase']} — {r['rationale']}"
+        )
+        lines.append("")
+
+    lines.append("─" * 28)
+    lines.append(
+        "_Proxy teknikal — konfirmasi dengan ATS sebelum eksekusi_ 🔍"
+    )
+    return "\n".join(lines)

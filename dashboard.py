@@ -113,10 +113,25 @@ _telegram_lock = threading.Lock()
 # ============================================================
 # VERSION HISTORY
 # ============================================================
-APP_VERSION  = "V5.6.3"
-APP_UPDATED  = "06 Mei 2026"
+APP_VERSION  = "V5.6.5"
+APP_UPDATED  = "20 Mei 2026"
 
 VERSION_HISTORY = [
+    {
+        "versi":   "V5.6.5",
+        "tanggal": "20 Mei 2026",
+        "tipe":    "Feature — Livermore Wisdom + UV Scanner",
+        "ringkasan": "8 kutipan Jesse Livermore + terjemahan di How To Use BH + Undervalued Scanner + BH Telegram fix",
+        "detail": [
+            "[FEAT #1] 8 kutipan Jesse Livermore dengan terjemahan Bahasa Indonesia",
+            "  Setiap kutipan dilengkapi konteks relevansi untuk trading sistem kita",
+            "  Dikelompokkan per fase: waiting, akumulasi, distribusi, cut loss, dll",
+            "[FEAT #2] Undervalued + Akumulasi Scanner — tombol baru di tab Bandar Hunter",
+            "  Grading A/B/C: diskon 52W high + RSI oversold + vol akumulasi D1",
+            "[FIX #3] BH Telegram silent fail — checkbox pakai session_state key",
+            "  Nilai checkbox tidak lagi reset saat Streamlit rerun",
+        ]
+    },
     {
         "versi":   "V5.6.3",
         "tanggal": "06 Mei 2026",
@@ -3597,6 +3612,120 @@ itu sinyal paling kuat. Dua sistem berbeda dengan logika berbeda, tapi setuju. C
         "False positive mungkin terjadi di saham tidak likuid."
     )
 
+    # ── Jesse Livermore Quotes ─────────────────────────────────
+    st.markdown("---")
+    st.markdown("## 📖 Wisdom Jesse Livermore — Bapak Tape Reading Modern")
+    st.caption(
+        "Jesse Livermore (1877–1940) adalah trader legendaris yang membangun "
+        "kekayaan ratusan juta dolar hanya dari membaca pergerakan harga dan volume. "
+        "Bandar Hunter adalah implementasi modern dari metodologinya."
+    )
+
+    livermore_quotes = [
+        {
+            "fase"   : "⚡ Saat menunggu entry",
+            "en"     : '"The big money is not in the buying and the selling, but in the waiting."',
+            "id"     : '"Uang besar bukan dari beli dan jual, tapi dari menunggu."',
+            "konteks": "Inilah kenapa kita tidak langsung entry setelah BH detect sinyal. "
+                       "Menunggu konfirmasi D1 + ATS adalah edge terbesar yang kita punya. "
+                       "ADRO pagi ini — volume besar tapi harga turun. Kita tunggu, tidak FOMO.",
+            "warna"  : "info",
+        },
+        {
+            "fase"   : "🤫 Saat akumulasi terdeteksi",
+            "en"     : '"Big operators always tip their hand. Watch the volume — '
+                       'they cannot hide their footprints."',
+            "id"     : '"Operator besar selalu meninggalkan jejak. Perhatikan volume — '
+                       'mereka tidak bisa menyembunyikan sidik jari mereka."',
+            "konteks": "Inilah fondasi Bandar Hunter. Volume spike yang tidak proporsional "
+                       "dengan pergerakan harga adalah tanda akumulasi diam-diam. "
+                       "HEAL kemarin — vol 2.6× tapi harga hanya +0.5%. Bandar sedang mengumpulkan.",
+            "warna"  : "success",
+        },
+        {
+            "fase"   : "🔴 Saat distribusi terdeteksi",
+            "en"     : '"When price falls on heavy volume, that is distribution, not accumulation. '
+                       'The smart money is selling to the eager public."',
+            "id"     : '"Ketika harga turun dengan volume besar, itu distribusi, bukan akumulasi. '
+                       'Uang pintar sedang menjual ke publik yang bersemangat."',
+            "konteks": "Persis yang terjadi pada ADRO pagi ini. Volume 428,776K tapi harga turun "
+                       "dari 2.290 ke 2.280. Bid ratio hanya 24%. Bandar sedang jual, "
+                       "retail yang masuk karena lihat sinyal kemarin adalah yang membeli.",
+            "warna"  : "error",
+        },
+        {
+            "fase"   : "✂️ Saat cut loss",
+            "en"     : '"A loss never bothers me after I take it. I forget it overnight. '
+                       'But being wrong and not taking the loss — that is what does the damage."',
+            "id"     : '"Loss tidak pernah menggangguku setelah aku ambil. Aku lupakan dalam semalam. '
+                       'Tapi salah arah dan tidak mau cut loss — itulah yang merusak segalanya."',
+            "konteks": "RALS kemarin — cut loss di 450, selesai. Tidak ada yang perlu disesali. "
+                       "Sistem bekerja benar. Yang merusak trader bukan loss-nya, "
+                       "tapi keengganan untuk mengakui salah dan keluar.",
+            "warna"  : "warning",
+        },
+        {
+            "fase"   : "📊 Saat membaca market",
+            "en"     : '"Markets are never wrong — opinions often are."',
+            "id"     : '"Pasar tidak pernah salah — opini yang sering salah."',
+            "konteks": "Kalau data bilang DISTRIBUTION tapi kamu pikir market harusnya naik — "
+                       "data yang benar. IHSG -2.76% kemarin, ADRO gap down pagi ini. "
+                       "Pasar bicara. Kita dengarkan, bukan berdebat.",
+            "warna"  : "info",
+        },
+        {
+            "fase"   : "⏳ Saat tidak ada sinyal",
+            "en"     : '"There is a time to go long, a time to go short, '
+                       'and a time to go fishing."',
+            "id"     : '"Ada saatnya beli, ada saatnya short, '
+                       'dan ada saatnya pergi memancing."',
+            "konteks": "Regime DISTRIBUTION + IHSG turun 20% dalam 3 bulan = saatnya memancing. "
+                       "Cash adalah posisi yang valid. Tidak trading juga adalah keputusan. "
+                       "Elang tidak menyergap setiap mangsa yang lewat.",
+            "warna"  : "success",
+        },
+        {
+            "fase"   : "📈 Saat markup dimulai",
+            "en"     : '"The line of least resistance — when a stock breaks out of its range '
+                       'on volume, it is telling you where it wants to go."',
+            "id"     : '"Jalur hambatan terkecil — ketika saham breakout dari rangenya '
+                       'dengan volume, ia sedang memberitahumu ke mana ia ingin pergi."',
+            "konteks": "Inilah yang kita tunggu untuk MTEL. Volume spike 39.5× kemarin "
+                       "tapi harga masih di 500-509. Ketika harga akhirnya break 509 "
+                       "dengan volume berlanjut — itulah momen Livermore masuk.",
+            "warna"  : "info",
+        },
+        {
+            "fase"   : "🧠 Psikologi trading",
+            "en"     : '"It never was my thinking that made the big money for me. '
+                       'It always was my sitting. Men who can both be right and sit tight '
+                       'are uncommon."',
+            "id"     : '"Bukan pemikiranku yang menghasilkan uang besar. Selalu kesabaranku. '
+                       'Orang yang bisa benar sekaligus sabar menunggu itu sangat langka."',
+            "konteks": "Setup bagus + SL disiplin + sabar menunggu target = formula Livermore. "
+                       "Bukan berapa banyak trade yang kamu buat, tapi seberapa presisi "
+                       "dan sabar kamu dalam eksekusi.",
+            "warna"  : "success",
+        },
+    ]
+
+    for q in livermore_quotes:
+        with st.expander(f"💬 {q['fase']}", expanded=False):
+            if q["warna"] == "info":
+                st.info(f"*{q['en']}*\n\n**Terjemahan:** {q['id']}")
+            elif q["warna"] == "success":
+                st.success(f"*{q['en']}*\n\n**Terjemahan:** {q['id']}")
+            elif q["warna"] == "warning":
+                st.warning(f"*{q['en']}*\n\n**Terjemahan:** {q['id']}")
+            elif q["warna"] == "error":
+                st.error(f"*{q['en']}*\n\n**Terjemahan:** {q['id']}")
+            st.caption(f"📌 Relevansi untuk kita: {q['konteks']}")
+
+    st.markdown(
+        "> 📚 *Sumber: 'Reminiscences of a Stock Operator' by Edwin Lefèvre (1923) — "
+        "biografi Jesse Livermore yang wajib dibaca setiap trader serius.*"
+    )
+
     # ── Changelog ──────────────────────────────────────────────
     # ── Changelog ──────────────────────────────────────────────
     st.markdown("---")
@@ -4948,23 +5077,23 @@ Karena itu mereka bergerak dengan **pola yang bisa dideteksi**:
             }.get(x, x)
         )
 
-    col_btn_bh1, col_btn_bh2, _ = st.columns([1, 1, 3])
+    col_btn_bh1, col_btn_bh2, col_btn_bh3 = st.columns([1.2, 1.5, 1])
     with col_btn_bh1:
         do_bh_scan = st.button("🎯 Scan Bandar Sekarang",
                                type="primary", use_container_width=True)
     with col_btn_bh2:
+        do_uv_scan = st.button("🔍 Scan Undervalued + Akumulasi",
+                               type="secondary", use_container_width=True)
+    with col_btn_bh3:
         send_tg_bh = st.checkbox("Kirim Telegram", value=True,
                                   key="bh_send_telegram")
 
-    # ── Run scan ──────────────────────────────────────────────
+    # ── Run BH scan ───────────────────────────────────────────
     if do_bh_scan:
         if not bh_tickers:
             st.warning("Masukkan minimal 1 ticker.")
         else:
-            # Simpan preferensi telegram ke session state sebelum scan
-            # agar tidak hilang saat Streamlit rerun
             _send_tg = st.session_state.get("bh_send_telegram", True)
-
             bh_prog  = st.progress(0, text="🎯 Memulai Bandar Hunter scan...")
             bh_ph    = st.empty()
 
@@ -4990,16 +5119,44 @@ Karena itu mereka bergerak dengan **pola yang bisa dideteksi**:
                     if msg:
                         send_telegram(msg)
                         bh_ph.success(
-                            f"🎯 Telegram terkirim — {len(actionable)} sinyal actionable: "
+                            f"🎯 Telegram terkirim — {len(actionable)} sinyal: "
                             f"{', '.join(r.ticker for r in actionable)}"
                         )
                 else:
                     bh_ph.warning(
-                        f"⚠️ {len(actionable)} sinyal ditemukan tapi Telegram tidak dicentang. "
-                        f"Centang 'Kirim Telegram' dan scan ulang."
+                        f"⚠️ {len(actionable)} sinyal ditemukan tapi Telegram tidak dicentang."
                     )
             else:
                 bh_ph.info("🎯 Scan selesai — tidak ada sinyal actionable saat ini")
+
+    # ── Run UV scan ───────────────────────────────────────────
+    if do_uv_scan:
+        from bandar_hunter import scan_undervalued, format_uv_telegram
+        _send_tg = st.session_state.get("bh_send_telegram", True)
+        uv_prog  = st.progress(0, text="🔍 Memulai Undervalued scan...")
+        uv_ph    = st.empty()
+
+        def _uv_progress(i, n, tkr):
+            pct = int(i / n * 100) if n > 0 else 100
+            uv_prog.progress(pct, text=f"🔍 Scanning {tkr}... ({i}/{n})")
+
+        uv_results = scan_undervalued(tickers=bh_tickers, progress_cb=_uv_progress)
+        uv_prog.empty()
+
+        st.session_state["uv_results"]   = uv_results
+        st.session_state["uv_scan_time"] = datetime.now(WIB).strftime("%H:%M WIB")
+
+        uv_hits = [r for r in uv_results if r.get("grade") in ("A","B")]
+        if uv_hits and _send_tg:
+            msg = format_uv_telegram(uv_hits)
+            if msg:
+                send_telegram(msg)
+                uv_ph.success(
+                    f"🔍 Telegram terkirim — {len(uv_hits)} kandidat: "
+                    f"{', '.join(r['ticker'] for r in uv_hits)}"
+                )
+        elif not uv_hits:
+            uv_ph.info("🔍 Tidak ada kandidat undervalued + akumulasi saat ini")
 
     # ── Display results ───────────────────────────────────────
     if "bh_results" in st.session_state and st.session_state.bh_results:
