@@ -113,23 +113,28 @@ _telegram_lock = threading.Lock()
 # ============================================================
 # VERSION HISTORY
 # ============================================================
-APP_VERSION  = "V5.6.5"
-APP_UPDATED  = "20 Mei 2026"
+APP_VERSION  = "V5.6.6"
+APP_UPDATED  = "21 Mei 2026"
 
 VERSION_HISTORY = [
     {
-        "versi":   "V5.6.5",
-        "tanggal": "20 Mei 2026",
-        "tipe":    "Feature — Livermore Wisdom + UV Scanner",
-        "ringkasan": "8 kutipan Jesse Livermore + terjemahan di How To Use BH + Undervalued Scanner + BH Telegram fix",
+        "versi":   "V5.6.6",
+        "tanggal": "21 Mei 2026",
+        "tipe":    "Docs — Strict Rules BH + Pine Script BH v2",
+        "ringkasan": "Update How To Use BH dengan 7 strict rules dari pengalaman live trading + Pine Script v2 fix label floating",
         "detail": [
-            "[FEAT #1] 8 kutipan Jesse Livermore dengan terjemahan Bahasa Indonesia",
-            "  Setiap kutipan dilengkapi konteks relevansi untuk trading sistem kita",
-            "  Dikelompokkan per fase: waiting, akumulasi, distribusi, cut loss, dll",
-            "[FEAT #2] Undervalued + Akumulasi Scanner — tombol baru di tab Bandar Hunter",
-            "  Grading A/B/C: diskon 52W high + RSI oversold + vol akumulasi D1",
-            "[FIX #3] BH Telegram silent fail — checkbox pakai session_state key",
-            "  Nilai checkbox tidak lagi reset saat Streamlit rerun",
+            "[DOCS] 7 Strict Rules BH berdasarkan pelajaran live trading:",
+            "  Rule 1: Satu hari sinyal belum cukup — tunggu 3-5 hari konsisten",
+            "  Rule 2: Konfirmasi IPOT wajib (bid ratio, accum/dist, broker summary)",
+            "  Rule 3: Konfirmasi D1 wajib sebelum entry",
+            "  Rule 4: Wash trading detection — 1 broker beli=jual = sinyal palsu",
+            "  Rule 5: Vol spike + harga turun = distribusi, bukan akumulasi",
+            "  Rule 6: Cek corporate action sebelum interpretasi",
+            "  Rule 7: SL terpasang langsung setelah fill tanpa pengecualian",
+            "[DOCS] Kasus nyata: ADRO pump&dump, KBLI wash trading, AKRA/BRIS ex-dividen",
+            "[DOCS] Alur 6 step penggunaan BH yang benar",
+            "[DOCS] Panduan BH Pine Script TV + setup alert",
+            "[PINE] Bandar Hunter v2.0 — fix label yloc.belowbar/abovebar",
         ]
     },
     {
@@ -3572,158 +3577,147 @@ itu sinyal paling kuat. Dua sistem berbeda dengan logika berbeda, tapi setuju. C
     st.markdown("---")
     st.markdown("## 🎯 Panduan Bandar Hunter")
     st.info(
-        "**Bandar Hunter** adalah detector pergerakan institusional berbasis data 5 menit. "
-        "Berjalan terpisah dari ATS dan Falcon. Tujuannya bukan memberikan sinyal beli/jual, "
-        "tapi **mendidik kamu membaca jejak pergerakan uang besar** di market IDX."
+        "**Bandar Hunter** adalah radar awal pergerakan institusional — "
+        "bukan sinyal beli/jual. "
+        "Tugasnya mendeteksi jejak bandar SEBELUM ATS dan Falcon konfirmasi. "
+        "Selalu butuh konfirmasi berlapis sebelum eksekusi apapun."
     )
 
-    bh_ed1, bh_ed2 = st.columns(2)
-    with bh_ed1:
-        st.markdown("""
-**🔄 4 Fase Siklus yang Dideteksi:**
+    # ── 4 Sinyal ─────────────────────────────────────────────
+    st.markdown("### 📡 4 Sinyal yang Dideteksi")
+    bh_s1, bh_s2, bh_s3, bh_s4 = st.columns(4)
+    bh_s1.success("**⚡ MARKUP**\n\nBandar mulai push harga agresif.\nVol spike 4×+ dalam 1 candle.")
+    bh_s2.info("**🤫 AKUMULASI**\n\nBandar kumpul diam-diam.\nVol naik 3+ hari, harga sideways.")
+    bh_s3.warning("**🔊 ANOMALI**\n\nVol ekstrem tapi harga flat.\nArah belum jelas.")
+    bh_s4.error("**🔴 DISTRIBUSI**\n\nBandar jual ke retail.\nHarga naik tapi vol turun.")
 
-| Sinyal | Fase | Aksi |
-|---|---|---|
-| ⚡ Initial Markup | Bandar push harga | Monitor entry H1 |
-| 🤫 Akumulasi Senyap | Bandar kumpul saham | Setup entry terbaik |
-| 🔊 Volume Anomali | Arah belum jelas | Tunggu konfirmasi |
-| 🔴 Distribusi | Bandar mulai jual | Hindari entry baru |
-        """)
-    with bh_ed2:
-        st.markdown("""
-**⚙️ Cara Pakai:**
+    st.markdown("---")
 
-1. Tab **🎯 Bandar Hunter** — ticker otomatis dari kandidat ATS scan
-2. Klik **Scan Bandar Sekarang**
-3. Lihat sinyal yang muncul + baca edukasi di setiap card
-4. **Konfirmasi di D1 chart** sebelum eksekusi apapun
-5. Telegram alert otomatis kalau ada sinyal actionable
+    # ── STRICT RULES ─────────────────────────────────────────
+    st.markdown("### 🚫 STRICT RULES — Tidak Ada Pengecualian")
+    st.error("""
+**RULE 1 — Satu hari sinyal BELUM CUKUP**
+Sinyal BH harus konsisten minimal 3–5 hari berturut sebelum dipertimbangkan.
+Contoh: ADRO detect akumulasi 1 hari → langsung masuk = SALAH.
+Tunggu BH scan hari berikutnya — apakah sinyal berlanjut?
 
-**❗ Yang tidak boleh:**
-- Langsung entry hanya dari sinyal Bandar Hunter
-- Abaikan SL karena "bandar pasti lanjut naik"
-- Trading di luar jam 09:30–15:00 WIB
-        """)
+**RULE 2 — Konfirmasi IPOT wajib sebelum aksi apapun**
+Setelah BH detect, buka IPOT dan cek:
+- Bid ratio > 45% ✅
+- Accum/Dist positif dan naik ✅
+- Broker summary: tidak ada wash trading (bukan 1 broker beli = jual) ✅
+- Foreign net tidak negatif besar ✅
+Kalau salah satu merah → SKIP.
+
+**RULE 3 — Konfirmasi D1 wajib sebelum entry**
+BH pakai data 5 menit. Keputusan entry harus dari D1.
+Cek di TradingView: harga di atas MA50? Eagle/Phoenix ada signal? Support terdekat di mana?
+Tanpa konfirmasi D1 → JANGAN ENTRY.
+
+**RULE 4 — Wash trading = abaikan sinyal**
+Kalau broker summary menunjukkan 1 broker dengan buy lot = sell lot persis identik → itu manipulasi volume, bukan bandar genuine.
+Contoh nyata: KBLI hari ini — 1 broker beli 5.640 lot = jual 5.640 lot = sinyal palsu.
+
+**RULE 5 — Volume spike + harga turun = DISTRIBUSI, bukan akumulasi**
+Kalau BH detect markup tapi harga justru turun di IPOT → thesis salah.
+Contoh nyata: ADRO pagi ini — BH detect akumulasi, tapi harga turun -2.1% dengan vol besar = distribusi.
+Percaya data IPOT, bukan BH saja.
+
+**RULE 6 — Cek corporate action sebelum interpretasi**
+Saham ex-dividen akan turun adjusted — ini bukan distribusi, ini mekanisme pasar.
+Selalu cek tab Corp. Action di IPOT sebelum baca sinyal BH.
+Contoh: AKRA dan BRIS ex-dividen hari ini — penurunan harga wajar, bukan sinyal bearish.
+
+**RULE 7 — SL terpasang langsung setelah fill**
+Ini bukan rule BH — ini rule trading universal yang TIDAK BISA DILANGGAR.
+Apapun sinyalnya, SL hard stop di broker segera setelah order fill.
+Tidak ada mental stop. Tidak ada "nanti aku pasang".
+    """)
+
+    st.markdown("---")
+
+    # ── ALUR PENGGUNAAN ──────────────────────────────────────
+    st.markdown("### ✅ Alur Penggunaan yang Benar")
+    st.markdown("""
+```
+STEP 1 — BH Scan (ATS tab atau TV Pine)
+         Deteksi sinyal: Markup / Akumulasi / Anomali / Distribusi
+         ↓
+STEP 2 — Cek konsistensi (apakah sinyal sudah 2-3 hari?)
+         1 hari → watchlist saja
+         2-3 hari → lanjut ke step 3
+         ↓
+STEP 3 — Konfirmasi IPOT real-time
+         Bid ratio > 45%?
+         Accum/Dist positif?
+         Broker summary genuine (bukan wash trading)?
+         Corporate action ada?
+         ↓
+STEP 4 — Konfirmasi D1 di TradingView
+         Harga di atas MA50?
+         Eagle/Phoenix/Falcon ada signal?
+         Support dan resistance jelas?
+         ↓
+STEP 5 — Tunggu ATS scan konfirmasi
+         Kalau ATS juga keluarkan sinyal = ATS+BH = conviction tinggi
+         ↓
+STEP 6 — Entry dengan SL langsung terpasang
+         Hard stop di broker segera setelah fill
+         Tidak ada pengecualian
+```
+    """)
+
+    st.markdown("---")
+
+    # ── PELAJARAN DARI LIVE TRADING ──────────────────────────
+    st.markdown("### 📚 Pelajaran dari Live Trading")
+    st.warning("""
+**Kasus nyata yang sudah terjadi — jangan diulang:**
+
+**ADRO 20 Mei 2026:**
+BH detect akumulasi jam 10:20 — broker besar BK 249B masuk, bid ratio 54%.
+Entry di 2.300. Jam 11:00 harga jatuh ke 2.230.
+**Pelajaran:** Institusi besar masuk untuk markup sesaat lalu jual ke retail (pump & dump).
+Filter tambahan: kalau saham sudah naik >3-4% dalam 50 menit sebelum entry → HIGH RISK, tunggu konsolidasi dulu.
+
+**KBLI hari ini:**
+BH detect vol 8.9× — terlihat kuat.
+Cek IPOT broker summary: 1 broker beli 5.640 lot = jual 5.640 lot persis.
+**Pelajaran:** Wash trading. Volume palsu. Selalu cek broker summary sebelum percaya sinyal BH.
+
+**AKRA & BRIS:**
+Harga turun signifikan — terlihat seperti distribusi di BH.
+Ternyata ex-dividen.
+**Pelajaran:** Selalu cek corporate action sebelum interpretasi sinyal.
+    """)
+
+    st.markdown("---")
+
+    # ── BH + PINE TV ─────────────────────────────────────────
+    st.markdown("### 🖥️ Bandar Hunter Pine Script (TradingView)")
+    st.info("""
+**Bandar Hunter juga tersedia sebagai Pine Script untuk TradingView H1.**
+
+Label yang muncul di chart:
+- **[MARKUP]** orange — di bawah candle
+- **[AKUMULASI]** teal — di bawah candle
+- **[ANOMALI]** kuning — di bawah candle
+- **[DISTRIBUSI]** merah — di atas candle
+
+Panel bawah: Vol Ratio dengan garis threshold 4× (markup) dan 1.5× (akumulasi).
+
+**Alert setup:** Klik bell icon TV → pilih Bandar Hunter → Any alert() call → aktifkan notif HP.
+Setelah TV Pro aktif, alert real-time tanpa delay.
+
+**Cara pakai di TV:** Pasang di chart H1 saham yang sudah masuk radar BH ATS.
+Konfirmasi dengan Phoenix H1 yang sudah ada — kalau keduanya setuju di candle yang sama = conviction tertinggi.
+    """)
 
     st.warning(
-        "⚠️ **Keterbatasan:** Bandar Hunter menggunakan data yfinance 5m "
-        "sebagai **proxy** pergerakan institusional. "
-        "Ini bukan broker flow data sesungguhnya. "
-        "False positive mungkin terjadi di saham tidak likuid."
-    )
-
-    # ── Jesse Livermore Quotes ─────────────────────────────────
-    st.markdown("---")
-    st.markdown("## 📖 Wisdom Jesse Livermore — Bapak Tape Reading Modern")
-    st.caption(
-        "Jesse Livermore (1877–1940) adalah trader legendaris yang membangun "
-        "kekayaan ratusan juta dolar hanya dari membaca pergerakan harga dan volume. "
-        "Bandar Hunter adalah implementasi modern dari metodologinya."
-    )
-
-    livermore_quotes = [
-        {
-            "fase"   : "⚡ Saat menunggu entry",
-            "en"     : '"The big money is not in the buying and the selling, but in the waiting."',
-            "id"     : '"Uang besar bukan dari beli dan jual, tapi dari menunggu."',
-            "konteks": "Inilah kenapa kita tidak langsung entry setelah BH detect sinyal. "
-                       "Menunggu konfirmasi D1 + ATS adalah edge terbesar yang kita punya. "
-                       "ADRO pagi ini — volume besar tapi harga turun. Kita tunggu, tidak FOMO.",
-            "warna"  : "info",
-        },
-        {
-            "fase"   : "🤫 Saat akumulasi terdeteksi",
-            "en"     : '"Big operators always tip their hand. Watch the volume — '
-                       'they cannot hide their footprints."',
-            "id"     : '"Operator besar selalu meninggalkan jejak. Perhatikan volume — '
-                       'mereka tidak bisa menyembunyikan sidik jari mereka."',
-            "konteks": "Inilah fondasi Bandar Hunter. Volume spike yang tidak proporsional "
-                       "dengan pergerakan harga adalah tanda akumulasi diam-diam. "
-                       "HEAL kemarin — vol 2.6× tapi harga hanya +0.5%. Bandar sedang mengumpulkan.",
-            "warna"  : "success",
-        },
-        {
-            "fase"   : "🔴 Saat distribusi terdeteksi",
-            "en"     : '"When price falls on heavy volume, that is distribution, not accumulation. '
-                       'The smart money is selling to the eager public."',
-            "id"     : '"Ketika harga turun dengan volume besar, itu distribusi, bukan akumulasi. '
-                       'Uang pintar sedang menjual ke publik yang bersemangat."',
-            "konteks": "Persis yang terjadi pada ADRO pagi ini. Volume 428,776K tapi harga turun "
-                       "dari 2.290 ke 2.280. Bid ratio hanya 24%. Bandar sedang jual, "
-                       "retail yang masuk karena lihat sinyal kemarin adalah yang membeli.",
-            "warna"  : "error",
-        },
-        {
-            "fase"   : "✂️ Saat cut loss",
-            "en"     : '"A loss never bothers me after I take it. I forget it overnight. '
-                       'But being wrong and not taking the loss — that is what does the damage."',
-            "id"     : '"Loss tidak pernah menggangguku setelah aku ambil. Aku lupakan dalam semalam. '
-                       'Tapi salah arah dan tidak mau cut loss — itulah yang merusak segalanya."',
-            "konteks": "RALS kemarin — cut loss di 450, selesai. Tidak ada yang perlu disesali. "
-                       "Sistem bekerja benar. Yang merusak trader bukan loss-nya, "
-                       "tapi keengganan untuk mengakui salah dan keluar.",
-            "warna"  : "warning",
-        },
-        {
-            "fase"   : "📊 Saat membaca market",
-            "en"     : '"Markets are never wrong — opinions often are."',
-            "id"     : '"Pasar tidak pernah salah — opini yang sering salah."',
-            "konteks": "Kalau data bilang DISTRIBUTION tapi kamu pikir market harusnya naik — "
-                       "data yang benar. IHSG -2.76% kemarin, ADRO gap down pagi ini. "
-                       "Pasar bicara. Kita dengarkan, bukan berdebat.",
-            "warna"  : "info",
-        },
-        {
-            "fase"   : "⏳ Saat tidak ada sinyal",
-            "en"     : '"There is a time to go long, a time to go short, '
-                       'and a time to go fishing."',
-            "id"     : '"Ada saatnya beli, ada saatnya short, '
-                       'dan ada saatnya pergi memancing."',
-            "konteks": "Regime DISTRIBUTION + IHSG turun 20% dalam 3 bulan = saatnya memancing. "
-                       "Cash adalah posisi yang valid. Tidak trading juga adalah keputusan. "
-                       "Elang tidak menyergap setiap mangsa yang lewat.",
-            "warna"  : "success",
-        },
-        {
-            "fase"   : "📈 Saat markup dimulai",
-            "en"     : '"The line of least resistance — when a stock breaks out of its range '
-                       'on volume, it is telling you where it wants to go."',
-            "id"     : '"Jalur hambatan terkecil — ketika saham breakout dari rangenya '
-                       'dengan volume, ia sedang memberitahumu ke mana ia ingin pergi."',
-            "konteks": "Inilah yang kita tunggu untuk MTEL. Volume spike 39.5× kemarin "
-                       "tapi harga masih di 500-509. Ketika harga akhirnya break 509 "
-                       "dengan volume berlanjut — itulah momen Livermore masuk.",
-            "warna"  : "info",
-        },
-        {
-            "fase"   : "🧠 Psikologi trading",
-            "en"     : '"It never was my thinking that made the big money for me. '
-                       'It always was my sitting. Men who can both be right and sit tight '
-                       'are uncommon."',
-            "id"     : '"Bukan pemikiranku yang menghasilkan uang besar. Selalu kesabaranku. '
-                       'Orang yang bisa benar sekaligus sabar menunggu itu sangat langka."',
-            "konteks": "Setup bagus + SL disiplin + sabar menunggu target = formula Livermore. "
-                       "Bukan berapa banyak trade yang kamu buat, tapi seberapa presisi "
-                       "dan sabar kamu dalam eksekusi.",
-            "warna"  : "success",
-        },
-    ]
-
-    for q in livermore_quotes:
-        with st.expander(f"💬 {q['fase']}", expanded=False):
-            if q["warna"] == "info":
-                st.info(f"*{q['en']}*\n\n**Terjemahan:** {q['id']}")
-            elif q["warna"] == "success":
-                st.success(f"*{q['en']}*\n\n**Terjemahan:** {q['id']}")
-            elif q["warna"] == "warning":
-                st.warning(f"*{q['en']}*\n\n**Terjemahan:** {q['id']}")
-            elif q["warna"] == "error":
-                st.error(f"*{q['en']}*\n\n**Terjemahan:** {q['id']}")
-            st.caption(f"📌 Relevansi untuk kita: {q['konteks']}")
-
-    st.markdown(
-        "> 📚 *Sumber: 'Reminiscences of a Stock Operator' by Edwin Lefèvre (1923) — "
-        "biografi Jesse Livermore yang wajib dibaca setiap trader serius.*"
+        "⚠️ **Keterbatasan:** BH ATS pakai data yfinance 5m — bukan broker flow data sesungguhnya. "
+        "BH Pine TV pakai data delayed 15 menit di free plan. "
+        "False positive tinggi di saham tidak likuid dan wash trading. "
+        "SELALU konfirmasi dengan IPOT broker summary sebelum aksi apapun."
     )
 
     # ── Changelog ──────────────────────────────────────────────
@@ -5077,23 +5071,18 @@ Karena itu mereka bergerak dengan **pola yang bisa dideteksi**:
             }.get(x, x)
         )
 
-    col_btn_bh1, col_btn_bh2, col_btn_bh3 = st.columns([1.2, 1.5, 1])
+    col_btn_bh1, col_btn_bh2, _ = st.columns([1, 1, 3])
     with col_btn_bh1:
         do_bh_scan = st.button("🎯 Scan Bandar Sekarang",
                                type="primary", use_container_width=True)
     with col_btn_bh2:
-        do_uv_scan = st.button("🔍 Scan Undervalued + Akumulasi",
-                               type="secondary", use_container_width=True)
-    with col_btn_bh3:
-        send_tg_bh = st.checkbox("Kirim Telegram", value=True,
-                                  key="bh_send_telegram")
+        send_tg_bh = st.checkbox("Kirim Telegram", value=True)
 
-    # ── Run BH scan ───────────────────────────────────────────
+    # ── Run scan ──────────────────────────────────────────────
     if do_bh_scan:
         if not bh_tickers:
             st.warning("Masukkan minimal 1 ticker.")
         else:
-            _send_tg = st.session_state.get("bh_send_telegram", True)
             bh_prog  = st.progress(0, text="🎯 Memulai Bandar Hunter scan...")
             bh_ph    = st.empty()
 
@@ -5113,50 +5102,13 @@ Karena itu mereka bergerak dengan **pola yang bisa dideteksi**:
             st.session_state["bh_tickers"]    = bh_tickers
 
             actionable = [r for r in bh_results if r.is_actionable and not r.error]
-            if actionable:
-                if _send_tg:
-                    msg = format_bandar_telegram(actionable)
-                    if msg:
-                        send_telegram(msg)
-                        bh_ph.success(
-                            f"🎯 Telegram terkirim — {len(actionable)} sinyal: "
-                            f"{', '.join(r.ticker for r in actionable)}"
-                        )
-                else:
-                    bh_ph.warning(
-                        f"⚠️ {len(actionable)} sinyal ditemukan tapi Telegram tidak dicentang."
-                    )
-            else:
+            if actionable and send_tg_bh:
+                msg = format_bandar_telegram(actionable)
+                if msg:
+                    send_telegram(msg)
+                    bh_ph.success(f"🎯 Telegram terkirim — {len(actionable)} sinyal actionable")
+            elif not actionable:
                 bh_ph.info("🎯 Scan selesai — tidak ada sinyal actionable saat ini")
-
-    # ── Run UV scan ───────────────────────────────────────────
-    if do_uv_scan:
-        from bandar_hunter import scan_undervalued, format_uv_telegram
-        _send_tg = st.session_state.get("bh_send_telegram", True)
-        uv_prog  = st.progress(0, text="🔍 Memulai Undervalued scan...")
-        uv_ph    = st.empty()
-
-        def _uv_progress(i, n, tkr):
-            pct = int(i / n * 100) if n > 0 else 100
-            uv_prog.progress(pct, text=f"🔍 Scanning {tkr}... ({i}/{n})")
-
-        uv_results = scan_undervalued(tickers=bh_tickers, progress_cb=_uv_progress)
-        uv_prog.empty()
-
-        st.session_state["uv_results"]   = uv_results
-        st.session_state["uv_scan_time"] = datetime.now(WIB).strftime("%H:%M WIB")
-
-        uv_hits = [r for r in uv_results if r.get("grade") in ("A","B")]
-        if uv_hits and _send_tg:
-            msg = format_uv_telegram(uv_hits)
-            if msg:
-                send_telegram(msg)
-                uv_ph.success(
-                    f"🔍 Telegram terkirim — {len(uv_hits)} kandidat: "
-                    f"{', '.join(r['ticker'] for r in uv_hits)}"
-                )
-        elif not uv_hits:
-            uv_ph.info("🔍 Tidak ada kandidat undervalued + akumulasi saat ini")
 
     # ── Display results ───────────────────────────────────────
     if "bh_results" in st.session_state and st.session_state.bh_results:
