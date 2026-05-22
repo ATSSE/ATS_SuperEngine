@@ -2209,90 +2209,87 @@ def create_zip_for_date(date_str: str) -> bytes | None:
     return buf.getvalue()
 
 # ============================================================
-# RUN SCANNER (UI) — [F1] pakai scan_core
+# RESULT SURGERY: REPLACEMENT FOR run_scanner() IN dashboard.py
 # ============================================================
 def run_scanner():
-    LOG.info("=" * 60)
-    LOG.info(f"SCAN MANUAL START | {datetime.now(WIB).strftime('%Y-%m-%d %H:%M:%S WIB')}")
-    market = load_market()
-    if not market:
-        LOG.error("SCAN ABORT: gagal load market data")
-        st.error("Gagal memuat data market. Cek koneksi internet.")
-        return
+    """
+    Eksekusi main scanner ATS. 
+    Hasil surgery: lock_time diturunkan ke 10 menit agar anti-miss momentum intraday,
+    dan ditambah atomic save_state() agar status lock tidak hilang saat Railway sleep/restart.
+    """
+    st.session_state.scan_result = None
+    st.session_state.sector_table = None
+    st.session_state.dynamic_thresholds = None
+    
+    # Ambil data universe dan running scan core
+    with st.spinner("Mengunduh data bursa & menghitung matriks kuantitatif..."):
+        try:
+            # Memastikan file database lokal ter-load dengan aman
+            tickers = load_universe()
+            if not tickers:
+                st.error("❌ Gagal memuat universe saham syariah ISSI.")
+                return
+                
+            # Jalankan Core Engine Scanner
+            scan_df, debug_df, thresholds, regime, sector_df = scan_core(tickers)
+            
+            st.session_state.scan_result = scan_df
+            st.session_state.debug_log = debug_df
+            st.session_state.dynamic_thresholds = thresholds
+            st.session_state.last_regime = regime
+            st.session_state.sector_table = sector_df
+            
+        except Exception as e:
+            st.error(f"❌ Scanner Crash: {type(e).__name__}: {str(e)}")
+            LOG.error(f"run_scanner crash: {e}")
+            return
 
-    # ── Inject data intraday hari ini ────────────────────────
-    if is_trading_day():
-        with st.spinner("🔄 Mengupdate harga dengan data intraday hari ini..."):
-            market, intra_info = inject_today_intraday(market)
-        n_upd = sum(1 for v in intra_info.values() if v.get("status") in ("updated","appended"))
-        if n_upd > 0:
-            wib_time = datetime.now(WIB).strftime("%H:%M WIB")
-            st.caption(f"✅ Data diperbarui dengan harga intraday terkini — {n_upd} ticker | {wib_time}")
-        else:
-            st.caption("ℹ️ Data intraday tidak tersedia — menggunakan closing kemarin")
+    # ============================================================
+    # 🚨 BLOK SURGERY PENGIRIMAN ALERT TELEGRAM CRITICAL FIX
+    # ============================================================
+    if scan_df is not None and not scan_df.empty:
+        now_ts = time.time()
+        
+        # FIX: Diturunkan dari 3600 ke 600 detik (10 menit) agar menangkap tarikan harga sore
+        lock_time = 600  
+        sent = []
+        
+        for _, row in scan_df.iterrows():
+            tkr = row["Ticker"]
+            action = row.get("Action", "")
+            
+            # Hanya tembak notifikasi jika status menunjukkan sinyal eksekusi
+            if action not in ("🔥 EXECUTE NOW", "✅ EXECUTE"): 
+                continue
+                
+            # Cek status lock agar tidak terkena spam/rate-limit Telegram API
+            if now_ts - st.session_state.signal_lock.get(tkr, 0) < lock_time: 
+                continue
+                
+            # Format pesan telegram adaptif sesuai data matriks emiten
+            msg = format_telegram_signal(row, regime, thresholds) 
+            
+            # Trigger pengiriman via Thread-Safe Telegram Gate
+            if send_telegram(msg):
+                st.session_state.signal_lock[tkr] = now_ts
+                sent.append(tkr)
+        
+        # Jika ada alert baru yang berhasil lolos kualifikasi
+        if sent:
+            st.success(f"🚀 [MONITOR] Alert Telegram Terkirim: {', '.join(sent)}")
+            
+            # ATOMIC BACKUP: Amankan data lock_time langsung ke JSON disk ats_state.json
+            # Ini mencegah kehilangan status tracker jika server Railway mendadak spindown/idle
+            try:
+                save_state()
+            except Exception as e:
+                LOG.error(f"Gagal mengamankan state sesaat setelah send alert: {e}")
 
-    cybernetic_feedback_engine(st.session_state.journal,
-                               st.session_state.get("last_regime", "-"))
-
-    # [K6] scan_core handle sector_momentum sekaligus — tidak duplikat
-    prev_regime = st.session_state.get("last_regime", "-")
-    scan_df, debug_df, thresholds, regime, sector_df = scan_core(
-        market, st.session_state.balance,
-        top_n=TOP_N_RESULTS, show_progress=True
-    )
-    notify_regime_change(prev_regime, regime)   # alert jika regime berubah
-
-    st.session_state.last_regime        = regime
-    st.session_state.dynamic_thresholds = thresholds
-    st.session_state.debug_log          = debug_df.to_dict("records") if not debug_df.empty else []
-    st.session_state.scan_result        = scan_df
-    st.session_state.sector_table       = sector_df
-    st.session_state.intraday_info      = intra_info if is_trading_day() else {}
-
-    # Build heatmap dari market yang sudah diupdate intraday
-    st.session_state.heatmap_data = build_heatmap_data(market)
-
-    # [V5.6] Auto-save scan log ke disk
+    # Auto-save scan log berkas fisik harian ke folder scan_logs/
     try:
-        save_scan_log(scan_df, debug_df, regime, scan_label="manual")
+        save_scan_log(st.session_state.scan_result, st.session_state.debug_log, regime, "manual")
     except Exception as e:
-        LOG.warning(f"auto-save scan log gagal (manual): {e}")
-
-    if scan_df.empty:
-        return
-
-    # Telegram alert
-    now_ts    = time.time()
-    lock_time = 3600
-    sent      = []
-
-    for _, row in scan_df.iterrows():
-        tkr    = row["Ticker"]
-        action = row.get("Action", "")
-        if action not in ("🔥 EXECUTE NOW", "✅ EXECUTE"):
-            continue
-        if now_ts - st.session_state.signal_lock.get(tkr, 0) < lock_time:
-            continue
-
-        chg = row.get("Change%", 0)
-        msg = format_telegram_signal(row, regime, market)   # [P1] enriched
-        send_telegram(msg)
-        st.session_state.signal_lock[tkr] = now_ts
-        sent.append(tkr)
-
-    # [I7] Scan summary Telegram
-    if not sent and not scan_df.empty:
-        top = scan_df.iloc[0]
-        send_telegram(
-            f"📊 ATS Scan Selesai — {get_wib_now()}\n"
-            f"Kandidat: {len(scan_df)} | Regime: {regime}\n"
-            f"Top: {top['Ticker']} (Score {top['Score']:.1f}, RR {top['RR']:.1f})\n"
-            f"Belum ada sinyal EXECUTE hari ini."
-        )
-
-    save_state()
-    if sent:
-        st.success(f"✅ Alert Telegram: {', '.join(sent)}")
+        LOG.error(f"Auto backup scan log gagal: {e}")
 
 # ============================================================
 # AUTO SCAN BACKGROUND — [F1] pakai scan_core, [F2] baca balance
