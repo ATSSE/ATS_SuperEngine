@@ -40,7 +40,26 @@ from collections import defaultdict
 import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+# ============================================================
+# HOTFIX V5.6.8: AMANKAN KONFIGURASI TELEGRAM (ANTI KEYERROR)
+# ============================================================
+import os
+import streamlit as st
 
+# Membaca token menggunakan kecocokan nama variabel yang fleksibel
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", os.environ.get("TELEGRAM_BOT_TOKEN", ""))
+TELEGRAM_CHAT  = os.environ.get("TELEGRAM_CHAT", os.environ.get("TELEGRAM_CHAT_ID", ""))
+
+# Fallback cadangan jika konfigurasi disimpan di dalam file secrets Streamlit (.toml)
+if not TELEGRAM_TOKEN and "TELEGRAM_BOT_TOKEN" in st.secrets:
+    TELEGRAM_TOKEN = st.secrets["TELEGRAM_BOT_TOKEN"]
+elif not TELEGRAM_TOKEN and "TELEGRAM_TOKEN" in st.secrets:
+    TELEGRAM_TOKEN = st.secrets["TELEGRAM_TOKEN"]
+
+if not TELEGRAM_CHAT and "TELEGRAM_CHAT_ID" in st.secrets:
+    TELEGRAM_CHAT = st.secrets["TELEGRAM_CHAT_ID"]
+elif not TELEGRAM_CHAT and "TELEGRAM_CHAT" in st.secrets:
+    TELEGRAM_CHAT = st.secrets["TELEGRAM_CHAT"]
 # ============================================================
 # KONFIGURASI
 # ============================================================
@@ -118,6 +137,7 @@ APP_UPDATED  = "21 Mei 2026"
 
 VERSION_HISTORY = [
     {
+        
         "versi":   "V5.6.6",
         "tanggal": "21 Mei 2026",
         "tipe":    "Docs — Strict Rules BH + Pine Script BH v2",
@@ -425,46 +445,44 @@ def get_wib_now() -> str:
 # ============================================================
 # TELEGRAM
 # ============================================================
-def send_telegram(message: str, retries: int = 2):
+def send_telegram(msg: str) -> bool:
     """
-    [Task 5] Kirim Telegram dengan logging dan retry ringan.
-    Tidak lagi silent fail — semua error tercatat di ats.log.
+    Mengirim pesan alert ke bot Telegram menggunakan variable token yang sinkron.
+    Hasil Surgery V5.6.8: Menghapus dependensi st.secrets langsung untuk mencegah KeyError.
     """
+    global TELEGRAM_TOKEN, TELEGRAM_CHAT
+    
+    # Validasi awal: Jika token kosong, berikan log peringatan di konsol server
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT:
-        LOG.warning("Telegram tidak terkirim: TOKEN atau CHAT belum di-set")
+        LOG.error("❌ Pengiriman Telegram dibatalkan: TELEGRAM_TOKEN atau TELEGRAM_CHAT kosong/tidak terdefinisi!")
         return False
-
+        
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-
-    with _telegram_lock:   # [Task 3] thread-safe send
-        for attempt in range(retries + 1):
+    payload = {
+        "chat_id": TELEGRAM_CHAT,
+        "text": msg,
+        "parse_mode": "Markdown",
+        "disable_web_page_preview": True
+    }
+    
+    with _telegram_lock:
+        for attempt in range(3):
             try:
-                resp = requests.post(
-                    url,
-                    data={"chat_id": TELEGRAM_CHAT, "text": message},
-                    timeout=10,
-                )
-                if resp.status_code == 200:
-                    if attempt > 0:
-                        LOG.info(f"Telegram berhasil terkirim (retry {attempt})")
+                res = requests.post(url, json=payload, timeout=8)
+                if res.status_code == 200:
                     return True
+                elif res.status_code == 429:
+                    # Menangani kondisi batas limit API Telegram secara halus
+                    retry_after = res.json().get("parameters", {}).get("retry_after", 3)
+                    LOG.warning(f"⚠️ Telegram Rate Limit. Tidur {retry_after} detik...")
+                    time.sleep(retry_after)
                 else:
-                    LOG.warning(
-                        f"Telegram failed status={resp.status_code} "
-                        f"body={resp.text[:200]} attempt={attempt+1}/{retries+1}"
-                    )
-            except requests.Timeout:
-                LOG.warning(f"Telegram timeout attempt={attempt+1}/{retries+1}")
+                    LOG.error(f"❌ Telegram API Error: Status {res.status_code} -> {res.text}")
+                    break
             except Exception as e:
-                LOG.warning(f"Telegram error: {type(e).__name__}: {str(e)[:200]} attempt={attempt+1}")
-
-            # Retry dengan backoff
-            if attempt < retries:
-                time.sleep(1.5 * (attempt + 1))
-
-        LOG.error(f"Telegram FAILED setelah {retries+1} percobaan: {message[:80]}...")
-        return False
-
+                LOG.warning(f"⚠️ Percobaan kirim Telegram gagal ke-{attempt+1}: {e}")
+                time.sleep(1)
+    return False
 
 # ============================================================
 # AI PROVIDER ABSTRACTION — Anthropic Claude / Google Gemini
