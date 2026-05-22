@@ -433,40 +433,46 @@ def get_wib_now() -> str:
 # ============================================================
 def send_telegram(msg: str) -> bool:
     """
-    Mengirim pesan alert ke bot Telegram menggunakan variable token yang sinkron.
-    Hasil Surgery V5.6.8: Menghapus dependensi st.secrets langsung untuk mencegah KeyError.
+    Kirim pesan ke Telegram.
+    V5.6.9: Hapus parse_mode Markdown (penyebab silent 400 error).
+    Tambah logging response detail untuk debug.
     """
     global TELEGRAM_TOKEN, TELEGRAM_CHAT
-    
-    # Validasi awal: Jika token kosong, berikan log peringatan di konsol server
+
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT:
-        LOG.error("❌ Pengiriman Telegram dibatalkan: TELEGRAM_TOKEN atau TELEGRAM_CHAT kosong/tidak terdefinisi!")
+        LOG.warning("Telegram tidak terkirim: TOKEN atau CHAT belum di-set")
         return False
-        
+
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT,
-        "text": msg,
-        "parse_mode": "Markdown",
-        "disable_web_page_preview": True
-    }
-    
+
     with _telegram_lock:
         for attempt in range(3):
             try:
-                res = requests.post(url, json=payload, timeout=8)
+                res = requests.post(
+                    url,
+                    data={
+                        "chat_id": TELEGRAM_CHAT,
+                        "text"   : msg,
+                    },
+                    timeout=10,
+                )
                 if res.status_code == 200:
+                    LOG.info(f"Telegram terkirim OK (attempt {attempt+1})")
                     return True
                 elif res.status_code == 429:
-                    # Menangani kondisi batas limit API Telegram secara halus
                     retry_after = res.json().get("parameters", {}).get("retry_after", 3)
-                    LOG.warning(f"⚠️ Telegram Rate Limit. Tidur {retry_after} detik...")
+                    LOG.warning(f"Telegram rate limit — tunggu {retry_after}s")
                     time.sleep(retry_after)
                 else:
-                    LOG.error(f"❌ Telegram API Error: Status {res.status_code} -> {res.text}")
+                    LOG.error(
+                        f"Telegram error status={res.status_code} "
+                        f"body={res.text[:300]} attempt={attempt+1}"
+                    )
                     break
+            except requests.Timeout:
+                LOG.warning(f"Telegram timeout attempt={attempt+1}")
             except Exception as e:
-                LOG.warning(f"⚠️ Percobaan kirim Telegram gagal ke-{attempt+1}: {e}")
+                LOG.warning(f"Telegram exception attempt={attempt+1}: {e}")
                 time.sleep(1)
     return False
 
