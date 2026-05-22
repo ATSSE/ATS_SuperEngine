@@ -46,30 +46,16 @@ from apscheduler.triggers.cron import CronTrigger
 import os
 import streamlit as st
 
-# Masukkan string asli token dan chat id kamu di sini (Ganti teks di bawah ini)
-TELEGRAM_TOKEN = "JANGAN_HAPUS_KUTIP_MASUKKAN_TOKEN_BOT_TELEGRAM_MU_DISINI"
-TELEGRAM_CHAT  = "MASUKKAN_CHAT_ID_TELEGRAM_MU_DISINI"
-
-# Fallback otomatis (jika suatu saat hardcode di atas dikosongkan)
-if not TELEGRAM_TOKEN:
-    TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", os.environ.get("TELEGRAM_BOT_TOKEN", ""))
-    if not TELEGRAM_TOKEN and "TELEGRAM_BOT_TOKEN" in st.secrets:
-        TELEGRAM_TOKEN = st.secrets["TELEGRAM_BOT_TOKEN"]
-
-if not TELEGRAM_CHAT:
-    TELEGRAM_CHAT = os.environ.get("TELEGRAM_CHAT", os.environ.get("TELEGRAM_CHAT_ID", ""))
-    if not TELEGRAM_CHAT and "TELEGRAM_CHAT_ID" in st.secrets:
-        TELEGRAM_CHAT = st.secrets["TELEGRAM_CHAT_ID"]
 # ============================================================
 # KONFIGURASI
 # ============================================================
-FINNHUB_API_KEY    = os.environ.get("FINNHUB_API_KEY", "")
-TELEGRAM_TOKEN     = os.environ.get("TELEGRAM_TOKEN", "")
-TELEGRAM_CHAT      = os.environ.get("TELEGRAM_CHAT", "")
-ANTHROPIC_API_KEY  = os.environ.get("ANTHROPIC_API_KEY", "")
-GEMINI_API_KEY     = os.environ.get("GEMINI_API_KEY", "")
-STATE_FILE         = "ats_state.json"
-JOURNAL_FILE       = "journal.csv"
+FINNHUB_API_KEY   = os.environ.get("FINNHUB_API_KEY", "")
+TELEGRAM_TOKEN    = os.environ.get("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT     = os.environ.get("TELEGRAM_CHAT", "")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+GEMINI_API_KEY    = os.environ.get("GEMINI_API_KEY", "")
+STATE_FILE        = "ats_state.json"
+JOURNAL_FILE      = "journal.csv"
 ACTIVE_FILE        = "active_trades.csv"
 LOG_FILE           = "ats.log"
 
