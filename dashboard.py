@@ -41,25 +41,25 @@ import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 # ============================================================
-# HOTFIX V5.6.8: AMANKAN KONFIGURASI TELEGRAM (ANTI KEYERROR)
+# HOTFIX V5.6.9: HARDCODE BYPASS UNTUK BACKGROUND THREAD
 # ============================================================
 import os
 import streamlit as st
 
-# Membaca token menggunakan kecocokan nama variabel yang fleksibel
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", os.environ.get("TELEGRAM_BOT_TOKEN", ""))
-TELEGRAM_CHAT  = os.environ.get("TELEGRAM_CHAT", os.environ.get("TELEGRAM_CHAT_ID", ""))
+# Masukkan string asli token dan chat id kamu di sini (Ganti teks di bawah ini)
+TELEGRAM_TOKEN = "JANGAN_HAPUS_KUTIP_MASUKKAN_TOKEN_BOT_TELEGRAM_MU_DISINI"
+TELEGRAM_CHAT  = "MASUKKAN_CHAT_ID_TELEGRAM_MU_DISINI"
 
-# Fallback cadangan jika konfigurasi disimpan di dalam file secrets Streamlit (.toml)
-if not TELEGRAM_TOKEN and "TELEGRAM_BOT_TOKEN" in st.secrets:
-    TELEGRAM_TOKEN = st.secrets["TELEGRAM_BOT_TOKEN"]
-elif not TELEGRAM_TOKEN and "TELEGRAM_TOKEN" in st.secrets:
-    TELEGRAM_TOKEN = st.secrets["TELEGRAM_TOKEN"]
+# Fallback otomatis (jika suatu saat hardcode di atas dikosongkan)
+if not TELEGRAM_TOKEN:
+    TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", os.environ.get("TELEGRAM_BOT_TOKEN", ""))
+    if not TELEGRAM_TOKEN and "TELEGRAM_BOT_TOKEN" in st.secrets:
+        TELEGRAM_TOKEN = st.secrets["TELEGRAM_BOT_TOKEN"]
 
-if not TELEGRAM_CHAT and "TELEGRAM_CHAT_ID" in st.secrets:
-    TELEGRAM_CHAT = st.secrets["TELEGRAM_CHAT_ID"]
-elif not TELEGRAM_CHAT and "TELEGRAM_CHAT" in st.secrets:
-    TELEGRAM_CHAT = st.secrets["TELEGRAM_CHAT"]
+if not TELEGRAM_CHAT:
+    TELEGRAM_CHAT = os.environ.get("TELEGRAM_CHAT", os.environ.get("TELEGRAM_CHAT_ID", ""))
+    if not TELEGRAM_CHAT and "TELEGRAM_CHAT_ID" in st.secrets:
+        TELEGRAM_CHAT = st.secrets["TELEGRAM_CHAT_ID"]
 # ============================================================
 # KONFIGURASI
 # ============================================================
