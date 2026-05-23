@@ -432,11 +432,7 @@ def get_wib_now() -> str:
 # TELEGRAM
 # ============================================================
 def send_telegram(msg: str) -> bool:
-    """
-    Kirim pesan ke Telegram.
-    V5.6.9: Hapus parse_mode Markdown (penyebab silent 400 error).
-    Tambah logging response detail untuk debug.
-    """
+    """Kirim pesan ke Telegram. V5.6.9: hapus parse_mode Markdown (silent 400 error)."""
     global TELEGRAM_TOKEN, TELEGRAM_CHAT
 
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT:
@@ -450,24 +446,18 @@ def send_telegram(msg: str) -> bool:
             try:
                 res = requests.post(
                     url,
-                    data={
-                        "chat_id": TELEGRAM_CHAT,
-                        "text"   : msg,
-                    },
+                    data={"chat_id": TELEGRAM_CHAT, "text": msg},
                     timeout=10,
                 )
                 if res.status_code == 200:
-                    LOG.info(f"Telegram terkirim OK (attempt {attempt+1})")
+                    LOG.info(f"Telegram OK attempt={attempt+1}")
                     return True
                 elif res.status_code == 429:
                     retry_after = res.json().get("parameters", {}).get("retry_after", 3)
                     LOG.warning(f"Telegram rate limit — tunggu {retry_after}s")
                     time.sleep(retry_after)
                 else:
-                    LOG.error(
-                        f"Telegram error status={res.status_code} "
-                        f"body={res.text[:300]} attempt={attempt+1}"
-                    )
+                    LOG.error(f"Telegram error status={res.status_code} body={res.text[:300]}")
                     break
             except requests.Timeout:
                 LOG.warning(f"Telegram timeout attempt={attempt+1}")
@@ -5083,13 +5073,49 @@ Karena itu mereka bergerak dengan **pola yang bisa dideteksi**:
         do_bh_scan = st.button("🎯 Scan Bandar Sekarang",
                                type="primary", use_container_width=True)
     with col_btn_bh2:
-        send_tg_bh = st.checkbox("Kirim Telegram", value=True)
+        send_tg_bh = st.checkbox("Kirim Telegram", value=True,
+                                  key="bh_send_telegram")
+
+    # ── Test koneksi Telegram ──────────────────────────────────
+    col_test, col_status = st.columns([1, 3])
+    with col_test:
+        do_tg_test = st.button("🔔 Test Telegram", use_container_width=True)
+    if do_tg_test:
+        ts = datetime.now(WIB).strftime("%d %b %Y %H:%M WIB")
+        dummy_msg = (
+            "BANDAR HUNTER - TEST KONEKSI\n"
+            "================================\n"
+            f"Waktu: {ts}\n"
+            "Status: Koneksi berhasil!\n"
+            "================================\n"
+            "DUMMY SIGNAL - BUKAN SINYAL NYATA\n"
+            "\n"
+            "BRIS | Initial Markup\n"
+            "Harga: Rp 1.825 | Vol: 5.3x\n"
+            "Chg: +1.40% | Conf: HIGH\n"
+            "\n"
+            "CPIN | Akumulasi Senyap\n"
+            "Harga: Rp 4.270 | Vol: 3.2x\n"
+            "Chg: +0.80% | Conf: MEDIUM\n"
+            "================================\n"
+            "ATS SuperEngine - Bandar Hunter"
+        )
+        ok = send_telegram(dummy_msg)
+        if ok:
+            st.success("✅ Test Telegram BERHASIL — cek HP kamu sekarang!")
+        else:
+            st.error(
+                "❌ Test Telegram GAGAL — "
+                "cek TELEGRAM_TOKEN dan TELEGRAM_CHAT di Railway Variables, "
+                "lalu Redeploy."
+            )
 
     # ── Run scan ──────────────────────────────────────────────
     if do_bh_scan:
         if not bh_tickers:
             st.warning("Masukkan minimal 1 ticker.")
         else:
+            _send_tg = st.session_state.get("bh_send_telegram", True)
             bh_prog  = st.progress(0, text="🎯 Memulai Bandar Hunter scan...")
             bh_ph    = st.empty()
 
@@ -5109,12 +5135,26 @@ Karena itu mereka bergerak dengan **pola yang bisa dideteksi**:
             st.session_state["bh_tickers"]    = bh_tickers
 
             actionable = [r for r in bh_results if r.is_actionable and not r.error]
-            if actionable and send_tg_bh:
-                msg = format_bandar_telegram(actionable)
-                if msg:
-                    send_telegram(msg)
-                    bh_ph.success(f"🎯 Telegram terkirim — {len(actionable)} sinyal actionable")
-            elif not actionable:
+            if actionable:
+                if _send_tg:
+                    msg = format_bandar_telegram(actionable)
+                    if msg:
+                        ok = send_telegram(msg)
+                        if ok:
+                            bh_ph.success(
+                                f"🎯 Telegram terkirim — {len(actionable)} sinyal: "
+                                f"{', '.join(r.ticker for r in actionable)}"
+                            )
+                        else:
+                            bh_ph.error(
+                                f"🎯 {len(actionable)} sinyal ditemukan tapi Telegram GAGAL kirim. "
+                                "Cek Railway Variables."
+                            )
+                else:
+                    bh_ph.warning(
+                        f"⚠️ {len(actionable)} sinyal ditemukan tapi Telegram tidak dicentang."
+                    )
+            else:
                 bh_ph.info("🎯 Scan selesai — tidak ada sinyal actionable saat ini")
 
     # ── Display results ───────────────────────────────────────
