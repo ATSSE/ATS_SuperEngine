@@ -118,8 +118,8 @@ _telegram_lock = threading.Lock()
 # ============================================================
 # VERSION HISTORY
 # ============================================================
-APP_VERSION  = "V5.6.6"
-APP_UPDATED  = "21 Mei 2026"
+APP_VERSION  = "V5.6.7"
+APP_UPDATED  = "23 Mei 2026"
 
 VERSION_HISTORY = [
     {
@@ -3137,7 +3137,7 @@ header_html = (
 
 st.markdown(header_html, unsafe_allow_html=True)
 
-tabs = st.tabs(["📖 HOW TO USE", "📊 TRADING DESK", "💼 ACCOUNT", "📋 REPORT", "🕌 ISSI CHECK", "🔬 DEEP ANALYSIS", "🦅 FALCON HUNTER", "🎯 BANDAR HUNTER"])
+tabs = st.tabs(["📖 HOW TO USE", "📊 TRADING DESK", "💼 ACCOUNT", "📋 REPORT", "🕌 ISSI CHECK", "🔬 DEEP ANALYSIS", "🦅 FALCON HUNTER", "🎯 BANDAR HUNTER", "📚 WISDOM"])
 
 # ─────────────────────────────────────────────────────────────
 # TAB 0 — HOW TO USE
@@ -5203,6 +5203,223 @@ Karena itu mereka bergerak dengan **pola yang bisa dideteksi**:
             """)
 
 st.divider()
+
+# ── TAB 8 — WISDOM ────────────────────────────────────────────
+with tabs[8]:
+    st.markdown("## 📚 Jesse Livermore — Wisdom & Vocabulary")
+    st.caption(
+        "Kutipan legendaris dari Reminiscences of a Stock Operator & How to Trade in Stocks. "
+        "Baca sambil menunggu sinyal — setiap kata relevan untuk trading hari ini."
+    )
+
+    QUOTES = [
+        {
+            "cat": "sabar", "cat_label": "Sabar & Timing",
+            "en": '"The big money is not in the buying and the selling, but in the waiting."',
+            "id": '"Uang besar bukan dari beli dan jual, tapi dari menunggu."',
+            "konteks": "Relevan setiap kali mau FOMO masuk sebelum konfirmasi. BH detect sinyal, ATS belum confirm — tunggu.",
+            "source": "Reminiscences of a Stock Operator"
+        },
+        {
+            "cat": "sabar", "cat_label": "Sabar & Timing",
+            "en": '"It never was my thinking that made the big money for me. It always was my sitting. Men who can both be right and sit tight are uncommon."',
+            "id": '"Bukan pemikiranku yang menghasilkan uang besar. Selalu kesabaranku. Orang yang bisa benar sekaligus sabar menunggu itu sangat langka."',
+            "konteks": "Setup bagus + sabar menunggu target tercapai = formula Livermore. Bukan berapa banyak trade, tapi seberapa presisi.",
+            "source": "Reminiscences of a Stock Operator"
+        },
+        {
+            "cat": "sabar", "cat_label": "Sabar & Timing",
+            "en": '"There is a time to go long, a time to go short, and a time to go fishing."',
+            "id": '"Ada saatnya beli, ada saatnya short, dan ada saatnya pergi memancing."',
+            "konteks": "DISTRIBUTION regime + IHSG turun 20% = saatnya memancing. Cash adalah posisi yang valid.",
+            "source": "How to Trade in Stocks"
+        },
+        {
+            "cat": "sabar", "cat_label": "Sabar & Timing",
+            "en": '"Do not anticipate and move without market confirmation — being a little late in your trade is your insurance that you are right."',
+            "id": '"Jangan antisipasi dan bergerak tanpa konfirmasi market — terlambat sedikit dalam entry adalah asuransimu bahwa kamu benar."',
+            "konteks": "Jangan entry sebelum candle close, sebelum ATS confirm, sebelum broker summary dibaca.",
+            "source": "How to Trade in Stocks"
+        },
+        {
+            "cat": "volume", "cat_label": "Volume & Tape",
+            "en": '"Big operators always tip their hand. Watch the volume — they cannot hide their footprints."',
+            "id": '"Operator besar selalu meninggalkan jejak. Perhatikan volume — mereka tidak bisa menyembunyikan sidik jari mereka."',
+            "konteks": "Fondasi Bandar Hunter. Vol spike tidak proporsional = jejak institusi. TINS naik 6% dengan Vol 134B.",
+            "source": "Reminiscences of a Stock Operator"
+        },
+        {
+            "cat": "volume", "cat_label": "Volume & Tape",
+            "en": '"When price falls on heavy volume, that is distribution, not accumulation. The smart money is selling to the eager public."',
+            "id": '"Ketika harga turun dengan volume besar, itu distribusi, bukan akumulasi. Uang pintar sedang menjual ke publik yang bersemangat."',
+            "konteks": "Persis yang terjadi pada ADRO — volume 428K lot tapi harga turun. Bid ratio 24%. Bandar sedang distribusi.",
+            "source": "Reminiscences of a Stock Operator"
+        },
+        {
+            "cat": "volume", "cat_label": "Volume & Tape",
+            "en": '"Volume is the ammunition of the market. Without volume, price moves are meaningless."',
+            "id": '"Volume adalah amunisi market. Tanpa volume, pergerakan harga tidak berarti apa-apa."',
+            "konteks": "Kenapa BH pakai threshold vol 2-4x. Markup tanpa volume = false signal. Selalu cek vol sebelum entry.",
+            "source": "How to Trade in Stocks"
+        },
+        {
+            "cat": "loss", "cat_label": "Loss & Cut",
+            "en": '"A loss never bothers me after I take it. I forget it overnight. But being wrong and not taking the loss — that is what does the damage."',
+            "id": '"Loss tidak pernah menggangguku setelah aku ambil. Aku lupakan dalam semalam. Tapi salah arah dan tidak mau cut loss — itulah yang merusak segalanya."',
+            "konteks": "RALS cut loss bersih di 450 — sistem bekerja benar. Yang merusak bukan loss-nya, tapi keengganan mengakui salah.",
+            "source": "Reminiscences of a Stock Operator"
+        },
+        {
+            "cat": "loss", "cat_label": "Loss & Cut",
+            "en": '"The only time I really ever lost money was when I broke my own rules."',
+            "id": '"Satu-satunya saat aku benar-benar kehilangan uang adalah ketika aku melanggar rules-ku sendiri."',
+            "konteks": "ADRO — SL tidak dipasang langsung setelah fill. Bukan sistem yang salah. Rules yang dilanggar.",
+            "source": "Reminiscences of a Stock Operator"
+        },
+        {
+            "cat": "loss", "cat_label": "Loss & Cut",
+            "en": '"Successful trading is always an emotional battle for the speculator, not an intellectual one."',
+            "id": '"Trading yang sukses selalu merupakan pertarungan emosional bagi trader, bukan pertarungan intelektual."',
+            "konteks": "Sistem dan analisis bisa benar 100%. Tapi kalau emosi yang pegang kendali saat eksekusi — hasilnya berbeda.",
+            "source": "How to Trade in Stocks"
+        },
+        {
+            "cat": "market", "cat_label": "Market & Harga",
+            "en": '"Markets are never wrong — opinions often are."',
+            "id": '"Pasar tidak pernah salah — opini yang sering salah."',
+            "konteks": "Kalau data IPOT bilang distribusi tapi kamu pikir harusnya naik — data yang benar. Bukan opinimu.",
+            "source": "Reminiscences of a Stock Operator"
+        },
+        {
+            "cat": "market", "cat_label": "Market & Harga",
+            "en": '"There is nothing new in Wall Street. Whatever happens today has happened before and will happen again."',
+            "id": '"Tidak ada yang baru di Wall Street. Apapun yang terjadi hari ini sudah pernah terjadi sebelumnya dan akan terjadi lagi."',
+            "konteks": "Pump & dump ADRO, wash trading KBLI, distribusi BRPT — semua sudah terjadi ribuan kali di market manapun.",
+            "source": "Reminiscences of a Stock Operator"
+        },
+        {
+            "cat": "market", "cat_label": "Market & Harga",
+            "en": '"The line of least resistance — when a stock breaks out on volume, it is telling you where it wants to go."',
+            "id": '"Jalur hambatan terkecil — ketika saham breakout dengan volume, ia sedang memberitahumu ke mana ia ingin pergi."',
+            "konteks": "TINS breakout dari 2.970 ke 3.180 dengan Vol 134B. Market sedang bicara. Tugas kita mendengarkan.",
+            "source": "How to Trade in Stocks"
+        },
+        {
+            "cat": "market", "cat_label": "Market & Harga",
+            "en": '"A stock is never too high to buy and never too low to sell."',
+            "id": '"Saham tidak pernah terlalu tinggi untuk dibeli dan tidak pernah terlalu rendah untuk dijual."',
+            "konteks": "Yang menentukan bukan level harga — tapi arah trend dan konfirmasi sistem. Entry setelah momentum terkonfirmasi.",
+            "source": "Reminiscences of a Stock Operator"
+        },
+        {
+            "cat": "psikologi", "cat_label": "Psikologi",
+            "en": '"The game of speculation is the most fascinating game in the world. But it is not a game for the stupid, the mentally lazy, or the get-rich-quick adventurer."',
+            "id": '"Trading adalah permainan paling menarik di dunia. Tapi ini bukan untuk yang malas berpikir atau yang ingin cepat kaya."',
+            "konteks": "Kamu sedang membangun yang tepat — sistem, disiplin, dan pemahaman yang dalam. Bukan get-rich-quick.",
+            "source": "Reminiscences of a Stock Operator"
+        },
+        {
+            "cat": "psikologi", "cat_label": "Psikologi",
+            "en": '"The human side of every person is the greatest enemy of the average investor or speculator."',
+            "id": '"Sisi manusiawi setiap orang adalah musuh terbesar dari trader rata-rata."',
+            "konteks": "FOMO, revenge trading, tidak mau cut loss, averaging down — semua lahir dari sisi manusiawi, bukan dari analisis.",
+            "source": "Reminiscences of a Stock Operator"
+        },
+        {
+            "cat": "psikologi", "cat_label": "Psikologi",
+            "en": '"The market does not beat them. They beat themselves, because though they have brains they cannot sit tight."',
+            "id": '"Pasar tidak mengalahkan mereka. Mereka mengalahkan diri sendiri, karena meski punya otak mereka tidak bisa diam dan sabar."',
+            "konteks": "Sistem kita sudah cukup baik. Musuh terbesar sekarang adalah diri sendiri saat eksekusi.",
+            "source": "Reminiscences of a Stock Operator"
+        },
+        {
+            "cat": "psikologi", "cat_label": "Psikologi",
+            "en": '"Hope and fear are the two greatest enemies of the speculator."',
+            "id": '"Harapan dan ketakutan adalah dua musuh terbesar dari trader."',
+            "konteks": "Hope: tidak mau cut loss karena berharap harga balik. Fear: tidak entry padahal setup valid karena takut loss.",
+            "source": "How to Trade in Stocks"
+        },
+        {
+            "cat": "posisi", "cat_label": "Posisi & Sizing",
+            "en": '"Don\'t try to buy at the bottom and sell at the top. It can\'t be done, except by liars."',
+            "id": '"Jangan coba beli di bottom dan jual di top. Itu tidak bisa dilakukan, kecuali oleh pembohong."',
+            "konteks": "Yang kita kejar bukan bottom atau top — tapi momentum yang sudah terkonfirmasi. Entry setelah breakout.",
+            "source": "Reminiscences of a Stock Operator"
+        },
+        {
+            "cat": "posisi", "cat_label": "Posisi & Sizing",
+            "en": '"It is not good to be too curious about all the reasons behind price movements. You risk clouding your mind with non-essentials."',
+            "id": '"Tidak baik terlalu penasaran dengan semua alasan di balik pergerakan harga. Kamu berisiko mengaburkan pikiran dengan hal tidak penting."',
+            "konteks": "Terlalu banyak analisis = analysis paralysis. Setup ada, konfirmasi ada, SL ada — eksekusi.",
+            "source": "How to Trade in Stocks"
+        },
+    ]
+
+    # Filter bar
+    CATS = {
+        "all":      "Semua",
+        "sabar":    "Sabar & Timing",
+        "volume":   "Volume & Tape",
+        "loss":     "Loss & Cut",
+        "market":   "Market & Harga",
+        "psikologi":"Psikologi",
+        "posisi":   "Posisi & Sizing",
+    }
+
+    CAT_COLORS = {
+        "sabar":    {"bg": "#E1F5EE", "txt": "#0F6E56", "border": "#1D9E75"},
+        "volume":   {"bg": "#E6F1FB", "txt": "#185FA5", "border": "#378ADD"},
+        "loss":     {"bg": "#FCEBEB", "txt": "#A32D2D", "border": "#E24B4A"},
+        "market":   {"bg": "#FAEEDA", "txt": "#854F0B", "border": "#BA7517"},
+        "psikologi":{"bg": "#EEEDFE", "txt": "#534AB7", "border": "#7F77DD"},
+        "posisi":   {"bg": "#FAECE7", "txt": "#993C1D", "border": "#D85A30"},
+    }
+
+    if "wisdom_cat" not in st.session_state:
+        st.session_state["wisdom_cat"] = "all"
+
+    # Filter buttons
+    btn_cols = st.columns(len(CATS))
+    for i, (k, v) in enumerate(CATS.items()):
+        with btn_cols[i]:
+            if st.button(
+                v,
+                key=f"wcat_{k}",
+                type="primary" if st.session_state["wisdom_cat"] == k else "secondary",
+                use_container_width=True
+            ):
+                st.session_state["wisdom_cat"] = k
+                st.rerun()
+
+    st.markdown("---")
+
+    # Filter quotes
+    sel = st.session_state["wisdom_cat"]
+    filtered = QUOTES if sel == "all" else [q for q in QUOTES if q["cat"] == sel]
+    st.caption(f"Menampilkan {len(filtered)} kutipan")
+
+    # Render cards
+    for q in filtered:
+        c = CAT_COLORS[q["cat"]]
+        with st.container(border=True):
+            # Badge
+            st.markdown(
+                f'<span style="background:{c["bg"]};color:{c["txt"]};'
+                f'padding:3px 12px;border-radius:12px;font-size:12px;font-weight:500;">'
+                f'{q["cat_label"]}</span>',
+                unsafe_allow_html=True
+            )
+            st.markdown(f"*{q['en']}*")
+            st.info(q["id"])
+            st.caption(f"**Konteks:** {q['konteks']}")
+            st.caption(f"*— {q['source']}*")
+
+    st.markdown("---")
+    st.markdown(
+        "> 📚 **Sumber:** *Reminiscences of a Stock Operator* — Edwin Lefèvre (1923) "
+        "& *How to Trade in Stocks* — Jesse Livermore (1940). "
+        "Dua buku wajib setiap trader serius."
+    )
 st.caption(
     f"ATS SuperEngine {APP_VERSION}  |  Update terakhir: {APP_UPDATED}  |  "
     "ISSI Syariah Scanner  |  Bukan rekomendasi investasi"
