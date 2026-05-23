@@ -50,12 +50,20 @@ import streamlit as st
 # KONFIGURASI
 # ============================================================
 FINNHUB_API_KEY   = os.environ.get("FINNHUB_API_KEY", "")
-TELEGRAM_TOKEN    = os.environ.get("TELEGRAM_TOKEN", "")
-TELEGRAM_CHAT     = os.environ.get("TELEGRAM_CHAT", "")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 GEMINI_API_KEY    = os.environ.get("GEMINI_API_KEY", "")
 STATE_FILE        = "ats_state.json"
 JOURNAL_FILE      = "journal.csv"
+
+# Baca Telegram dari st.secrets (Streamlit Cloud) atau os.environ (Railway/Render)
+def _get_secret(key: str) -> str:
+    try:
+        return st.secrets[key]
+    except Exception:
+        return os.environ.get(key, "")
+
+TELEGRAM_TOKEN = _get_secret("TELEGRAM_TOKEN")
+TELEGRAM_CHAT  = _get_secret("TELEGRAM_CHAT")
 ACTIVE_FILE        = "active_trades.csv"
 LOG_FILE           = "ats.log"
 
