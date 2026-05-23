@@ -5076,40 +5076,6 @@ Karena itu mereka bergerak dengan **pola yang bisa dideteksi**:
         send_tg_bh = st.checkbox("Kirim Telegram", value=True,
                                   key="bh_send_telegram")
 
-    # ── Test koneksi Telegram ──────────────────────────────────
-    col_test, col_status = st.columns([1, 3])
-    with col_test:
-        do_tg_test = st.button("🔔 Test Telegram", use_container_width=True)
-    if do_tg_test:
-        ts = datetime.now(WIB).strftime("%d %b %Y %H:%M WIB")
-        dummy_msg = (
-            "BANDAR HUNTER - TEST KONEKSI\n"
-            "================================\n"
-            f"Waktu: {ts}\n"
-            "Status: Koneksi berhasil!\n"
-            "================================\n"
-            "DUMMY SIGNAL - BUKAN SINYAL NYATA\n"
-            "\n"
-            "BRIS | Initial Markup\n"
-            "Harga: Rp 1.825 | Vol: 5.3x\n"
-            "Chg: +1.40% | Conf: HIGH\n"
-            "\n"
-            "CPIN | Akumulasi Senyap\n"
-            "Harga: Rp 4.270 | Vol: 3.2x\n"
-            "Chg: +0.80% | Conf: MEDIUM\n"
-            "================================\n"
-            "ATS SuperEngine - Bandar Hunter"
-        )
-        ok = send_telegram(dummy_msg)
-        if ok:
-            st.success("✅ Test Telegram BERHASIL — cek HP kamu sekarang!")
-        else:
-            st.error(
-                "❌ Test Telegram GAGAL — "
-                "cek TELEGRAM_TOKEN dan TELEGRAM_CHAT di Railway Variables, "
-                "lalu Redeploy."
-            )
-
     # ── Run scan ──────────────────────────────────────────────
     if do_bh_scan:
         if not bh_tickers:
