@@ -2232,8 +2232,8 @@ def run_scanner():
     # Ambil data universe dan running scan core
     with st.spinner("Mengunduh data bursa & menghitung matriks kuantitatif..."):
         try:
-            # Memastikan file database lokal ter-load dengan aman
-            tickers = load_universe()
+            # Gunakan ISSI_UNIVERSE langsung
+            tickers = list(ISSI_UNIVERSE)
             if not tickers:
                 st.error("❌ Gagal memuat universe saham syariah ISSI.")
                 return
