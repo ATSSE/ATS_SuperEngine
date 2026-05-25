@@ -2239,7 +2239,11 @@ def run_scanner():
                 return
                 
             # Jalankan Core Engine Scanner
-            scan_df, debug_df, thresholds, regime, sector_df = scan_core(tickers)
+            market  = load_market()
+            balance = st.session_state.get("balance", 800_000)
+            scan_df, debug_df, thresholds, regime, sector_df = scan_core(
+                market, balance, show_progress=True
+            )
             
             st.session_state.scan_result = scan_df
             st.session_state.debug_log = debug_df
