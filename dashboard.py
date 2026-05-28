@@ -411,8 +411,12 @@ IDX_HOLIDAYS: set[date] = {
     date(2026, 1, 1),   date(2026, 1, 14),  date(2026, 1, 19),
     date(2026, 3, 18),  date(2026, 3, 19),  date(2026, 3, 20),
     date(2026, 3, 23),  date(2026, 4, 3),   date(2026, 5, 1),
-    date(2026, 5, 20),  date(2026, 5, 22),  date(2026, 6, 1),
-    date(2026, 6, 17),  date(2026, 8, 17),  date(2026, 8, 18),
+    date(2026, 5, 20),  date(2026, 5, 22),
+    date(2026, 5, 27),  date(2026, 5, 28),  # Idul Adha + cuti bersama
+    date(2026, 6, 1),
+    date(2026, 6, 17),  date(2026, 6, 18),  # Idul Adha + cuti bersama
+    date(2026, 6, 26),  date(2026, 6, 27),  date(2026, 6, 28),  # Cuti bersama Idul Adha
+    date(2026, 8, 17),  date(2026, 8, 18),
     date(2026, 9, 24),  date(2026, 12, 25),
 }
 
