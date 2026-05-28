@@ -4018,8 +4018,15 @@ with tabs[1]:
         st.plotly_chart(fig_sec, use_container_width=True)
 
     # Debug dalam expander
-    if st.session_state.debug_log:
-        debug_df = pd.DataFrame(st.session_state.debug_log)
+    _debug = st.session_state.debug_log
+    _has_debug = (
+        _debug is not None and (
+            (isinstance(_debug, list) and len(_debug) > 0) or
+            (hasattr(_debug, '__len__') and len(_debug) > 0)
+        )
+    )
+    if _has_debug:
+        debug_df = pd.DataFrame(_debug) if isinstance(_debug, list) else _debug
         gugur_counts = (
             debug_df[debug_df["❌ Gugur di"] != "✅ LOLOS — masuk kandidat"]["❌ Gugur di"]
             .str.extract(r"^([^(|]+)")[0].str.strip().value_counts().reset_index()
