@@ -126,10 +126,23 @@ _telegram_lock = threading.Lock()
 # ============================================================
 # VERSION HISTORY
 # ============================================================
-APP_VERSION  = "V5.6.7"
-APP_UPDATED  = "23 Mei 2026"
+APP_VERSION  = "V5.6.8"
+APP_UPDATED  = "30 Mei 2026"
 
 VERSION_HISTORY = [
+    {
+        "versi":   "V5.6.8",
+        "tanggal": "30 Mei 2026",
+        "tipe":    "Universe Sync — OJK DES Periode I 2026",
+        "ringkasan": "Sinkronisasi ISSI universe dengan OJK KEP-21/D.04/2026 (21 Mei 2026): 15 ticker dihapus, 4 ticker baru ditambah",
+        "detail": [
+            "[UNIVERSE] Referensi diupdate: DES Periode II 2024 → DES Periode I 2026",
+            "[UNIVERSE] 15 ticker DIHAPUS (keluar dari DES): AMMN, AMRT, ASII, BPAM, EMTK, ICHI, INCO, NCKL, PGEO, PNLF, SCMA, SSMS, TBIG, TBLA, TOWR",
+            "[UNIVERSE] 4 ticker DITAMBAH: BTPS (Bank BTPN Syariah), SRTG (Saratoga), JSMR (Jasa Marga), CYBR (ITSEC Asia)",
+            "[UNIVERSE] TSPC (Tempo Scan Pacific) dikonfirmasi masuk DES I 2026",
+            "[SECTOR] SECTOR_MAP diupdate sesuai perubahan universe",
+        ]
+    },
     {
         
         "versi":   "V5.6.6",
@@ -3535,7 +3548,7 @@ Profit beruntun bukan alasan menaikkan size mendadak — streak bagus = market c
     with pt1:
         st.markdown("""
 **🤖 ATS SuperEngine**
-- Universe: 98 saham ISSI (luas)
+- Universe: 87 saham ISSI — DES I 2026 (luas)
 - Setup: Breakout + Bandar detection
 - Hold: Tidak ada batas waktu
 - Target: Single target, RR min 1.8×

@@ -1,150 +1,145 @@
 # =============================================================
 # config/universe.py
-# ATS SuperEngine V3.0 — ISSI Universe (Verified Syariah)
+# ATS SuperEngine V3.1 — ISSI Universe (Verified Syariah)
 #
-# Referensi: IDX ISSI Periode II 2024 (Nov 2024 - Apr 2025)
-# Diupdate: April 2025
+# Referensi: OJK DES (Daftar Efek Syariah) Periode I 2026
+#            KEP-21/D.04/2026, ditetapkan 21 Mei 2026
+# Diupdate: 30 Mei 2026
 #
-# DIHAPUS dari versi sebelumnya:
-#   BJBR  — Bank Jabar Banten (bank konvensional, bukan syariah)
-#   BJTM  — Bank Jatim (bank konvensional, bukan syariah)
-#   BBTN  — Bank BTN (bank konvensional, unit syariah belum spinoff)
-#   HMSP  — HM Sampoerna (rokok, haram)
-#   UNVR  — Unilever (tidak konsisten masuk ISSI, produk bermasalah)
-#   GOTO  — GoTo (tidak masuk ISSI karena ekuitas negatif)
-#   BUKA  — Bukalapak (tidak konsisten masuk ISSI)
+# PERUBAHAN dari versi sebelumnya (DES Periode II 2024):
+#   DIHAPUS — tidak ada di DES Periode I 2026:
+#     AMMN  — Amman Mineral (keluar dari DES)
+#     AMRT  — Sumber Alfaria Trijaya (keluar dari DES)
+#     ASII  — Astra International (keluar dari DES)
+#     BPAM  — Bareksa Portal Investama (keluar dari DES)
+#     EMTK  — Elang Mahkota Teknologi (keluar dari DES)
+#     ICHI  — Ichitan Group (keluar dari DES)
+#     INCO  — Vale Indonesia (keluar dari DES)
+#     NCKL  — Trimegah Bangun Persada (keluar dari DES)
+#     PGEO  — Pertamina Geothermal (keluar dari DES)
+#     PNLF  — Panin Financial (keluar dari DES)
+#     SCMA  — Surya Citra Media (keluar dari DES)
+#     SSMS  — Sawit Sumbermas Sarana (keluar dari DES)
+#     TBIG  — Tower Bersama (keluar dari DES)
+#     TBLA  — Tunas Baru Lampung (keluar dari DES)
+#     TOWR  — Sarana Menara Nusantara (keluar dari DES)
 # =============================================================
 
 ISSI_UNIVERSE = [
 
     # ================= ENERGY =================
-    "ADRO.JK",   # Adaro Energy — ISSI ✓
-    "ADMR.JK",   # Adaro Minerals — ISSI ✓
-    "ITMG.JK",   # Indo Tambangraya Megah — ISSI ✓
-    "PTBA.JK",   # Bukit Asam — ISSI ✓
-    "HRUM.JK",   # Harum Energy — ISSI ✓
-    "PGAS.JK",   # Perusahaan Gas Negara — ISSI ✓
-    "MEDC.JK",   # Medco Energi — ISSI ✓
-    "ELSA.JK",   # Elnusa — ISSI ✓
-    "PGEO.JK",   # Pertamina Geothermal — ISSI ✓
-    "BUMI.JK",   # Bumi Resources — ISSI ✓
-    "INDY.JK",   # Indika Energy — ISSI ✓
-    "AKRA.JK",   # AKR Corporindo — ISSI ✓
+    "ADRO.JK",   # Adaro (Alamtri Resources) — DES I 2026 ✓
+    "ADMR.JK",   # Adaro/Alamtri Minerals — DES I 2026 ✓
+    "ITMG.JK",   # Indo Tambangraya Megah — DES I 2026 ✓
+    "PTBA.JK",   # Bukit Asam — DES I 2026 ✓
+    "HRUM.JK",   # Harum Energy — DES I 2026 ✓
+    "PGAS.JK",   # Perusahaan Gas Negara — DES I 2026 ✓
+    "MEDC.JK",   # Medco Energi — DES I 2026 ✓
+    "ELSA.JK",   # Elnusa — DES I 2026 ✓
+    "BUMI.JK",   # Bumi Resources — DES I 2026 ✓
+    "INDY.JK",   # Indika Energy — DES I 2026 ✓
+    "AKRA.JK",   # AKR Corporindo — DES I 2026 ✓
 
-    # ================= MINING =================
-    "ANTM.JK",   # Aneka Tambang — ISSI ✓
-    "INCO.JK",   # Vale Indonesia — ISSI ✓
-    "MDKA.JK",   # Merdeka Copper Gold — ISSI ✓
-    "TINS.JK",   # Timah — ISSI ✓
-    "NCKL.JK",   # Trimegah Bangun Persada (Nickel) — ISSI ✓
-    "BRMS.JK",   # Bumi Resources Minerals — ISSI ✓
-    "HRTA.JK",   # Hartadinata Abadi — ISSI ✓
-    "AMMN.JK",   # Amman Mineral — ISSI ✓
-    "MBMA.JK",   # Merdeka Battery Materials — ISSI ✓
+    # ================= MINING / BARANG BAKU =================
+    "ANTM.JK",   # Aneka Tambang — DES I 2026 ✓
+    "MDKA.JK",   # Merdeka Copper Gold — DES I 2026 ✓
+    "TINS.JK",   # Timah — DES I 2026 ✓
+    "BRMS.JK",   # Bumi Resources Minerals — DES I 2026 ✓
+    "HRTA.JK",   # Hartadinata Abadi — DES I 2026 ✓
+    "MBMA.JK",   # Merdeka Battery Materials — DES I 2026 ✓
+    "INKP.JK",   # Indah Kiat Pulp & Paper — DES I 2026 ✓
+    "TKIM.JK",   # Pabrik Kertas Tjiwi Kimia — DES I 2026 ✓
+    "INTP.JK",   # Indocement Tunggal Prakarsa — DES I 2026 ✓
+    "SMGR.JK",   # Semen Indonesia — DES I 2026 ✓
 
-    # ================= BANK SYARIAH =================
-    # Hanya bank yang terdaftar di OJK sebagai Bank Umum Syariah
-    "BRIS.JK",   # Bank Syariah Indonesia — ISSI ✓ (satu-satunya bank syariah besar)
+    # ================= BANK SYARIAH (Emiten Syariah) =================
+    "BRIS.JK",   # Bank Syariah Indonesia — DES I 2026 ✓ (Emiten Syariah)
+    "BTPS.JK",   # Bank BTPN Syariah — DES I 2026 ✓ (Emiten Syariah)
 
-    # ================= MULTIFINANCE SYARIAH =================
-    "BPAM.JK",   # Bareksa Portal Investama — ISSI ✓
-    "PNLF.JK",   # Panin Financial — ISSI ✓ (screened syariah)
+    # ================= KEUANGAN =================
+    "SRTG.JK",   # Saratoga Investama Sedaya — DES I 2026 ✓
 
     # ================= TELCO =================
-    "TLKM.JK",   # Telkom Indonesia — ISSI ✓
-    "EXCL.JK",   # XL Axiata — ISSI ✓
-    "ISAT.JK",   # Indosat Ooredoo — ISSI ✓
-    "MTEL.JK",   # Dayamitra Telekomunikasi (Mitratel) — ISSI ✓
-    "TOWR.JK",   # Sarana Menara Nusantara — ISSI ✓
-    "TBIG.JK",   # Tower Bersama — ISSI ✓
+    "TLKM.JK",   # Telkom Indonesia — DES I 2026 ✓
+    "EXCL.JK",   # XLSMART Telecom (XL Axiata) — DES I 2026 ✓
+    "ISAT.JK",   # Indosat Ooredoo — DES I 2026 ✓
+    "MTEL.JK",   # Dayamitra Telekomunikasi (Mitratel) — DES I 2026 ✓
 
     # ================= CONSUMER STAPLES =================
-    "ICBP.JK",   # Indofood CBP — ISSI ✓
-    "INDF.JK",   # Indofood — ISSI ✓
-    "CPIN.JK",   # Charoen Pokphand Indonesia — ISSI ✓
-    "JPFA.JK",   # JAPFA Comfeed — ISSI ✓
-    "SIDO.JK",   # Industri Jamu Sido Muncul — ISSI ✓
-    "ULTJ.JK",   # Ultra Jaya Milk — ISSI ✓
-    "MYOR.JK",   # Mayora Indah — ISSI ✓
-    "ROTI.JK",   # Nippon Indosari Corpindo — ISSI ✓
-    "STTP.JK",   # Siantar Top — ISSI ✓
-    "CLEO.JK",   # Sariguna Primatirta — ISSI ✓
-    "GOOD.JK",   # Garudafood — ISSI ✓
-    "FOOD.JK",   # Sentra Food Indonesia — ISSI ✓
-    "ICHI.JK",   # Ichitan Group — ISSI ✓
+    "ICBP.JK",   # Indofood CBP — DES I 2026 ✓
+    "INDF.JK",   # Indofood — DES I 2026 ✓
+    "CPIN.JK",   # Charoen Pokphand Indonesia — DES I 2026 ✓
+    "JPFA.JK",   # JAPFA Comfeed — DES I 2026 ✓
+    "SIDO.JK",   # Industri Jamu Sido Muncul — DES I 2026 ✓
+    "ULTJ.JK",   # Ultra Jaya Milk — DES I 2026 ✓
+    "MYOR.JK",   # Mayora Indah — DES I 2026 ✓
+    "ROTI.JK",   # Nippon Indosari Corpindo — DES I 2026 ✓
+    "STTP.JK",   # Siantar Top — DES I 2026 ✓
+    "CLEO.JK",   # Sariguna Primatirta — DES I 2026 ✓
+    "GOOD.JK",   # Garudafood — DES I 2026 ✓
+    "FOOD.JK",   # Sentra Food Indonesia — DES I 2026 ✓
+    "DSNG.JK",   # Dharma Satya Nusantara — DES I 2026 ✓
+    "SIMP.JK",   # Salim Ivomas Pratama — DES I 2026 ✓
+    "AALI.JK",   # Astra Agro Lestari — DES I 2026 ✓
+    "LSIP.JK",   # PP London Sumatra — DES I 2026 ✓
 
     # ================= CONSUMER DISCRETIONARY =================
-    "AMRT.JK",   # Sumber Alfaria Trijaya (Alfamart) — ISSI ✓
-    "ACES.JK",   # Ace Hardware Indonesia — ISSI ✓
-    "ERAA.JK",   # Erajaya Swasembada — ISSI ✓
-    "MAPI.JK",   # Mitra Adiperkasa — ISSI ✓
-    "RALS.JK",   # Ramayana Lestari — ISSI ✓
-    "LPPF.JK",   # Matahari Department Store — ISSI ✓
-    "MAPB.JK",   # MAP Boga Adiperkasa — ISSI ✓
+    "ACES.JK",   # Ace Hardware (Aspirasi Hidup Indonesia) — DES I 2026 ✓
+    "ERAA.JK",   # Erajaya Swasembada — DES I 2026 ✓
+    "MAPI.JK",   # Mitra Adiperkasa — DES I 2026 ✓
+    "RALS.JK",   # Ramayana Lestari — DES I 2026 ✓
+    "LPPF.JK",   # MDS Retailing (Matahari) — DES I 2026 ✓
+    "MAPB.JK",   # MAP Boga Adiperkasa — DES I 2026 ✓
 
     # ================= HEALTHCARE =================
-    "MIKA.JK",   # Mitra Keluarga Karyasehat — ISSI ✓
-    "HEAL.JK",   # Medikaloka Hermina — ISSI ✓
-    "KLBF.JK",   # Kalbe Farma — ISSI ✓
-    "SILO.JK",   # Siloam International Hospitals — ISSI ✓
-    "SAME.JK",   # Sarana Meditama Metropolitan — ISSI ✓
-    "MERK.JK",   # Merck Indonesia — ISSI ✓
-    "PYFA.JK",   # Pyridam Farma — ISSI ✓
+    "MIKA.JK",   # Mitra Keluarga Karyasehat — DES I 2026 ✓
+    "HEAL.JK",   # Medikaloka Hermina — DES I 2026 ✓
+    "KLBF.JK",   # Kalbe Farma — DES I 2026 ✓
+    "SILO.JK",   # Siloam International Hospitals — DES I 2026 ✓
+    "SAME.JK",   # Sarana Meditama Metropolitan — DES I 2026 ✓
+    "MERK.JK",   # Merck Indonesia — DES I 2026 ✓
+    "PYFA.JK",   # Pyridam Farma — DES I 2026 ✓
+    "TSPC.JK",   # Tempo Scan Pacific — DES I 2026 ✓
 
     # ================= PROPERTY =================
-    "CTRA.JK",   # Ciputra Development — ISSI ✓
-    "PWON.JK",   # Pakuwon Jati — ISSI ✓
-    "SMRA.JK",   # Summarecon Agung — ISSI ✓
-    "DMAS.JK",   # Puradelta Lestari — ISSI ✓
-    "BSDE.JK",   # Bumi Serpong Damai — ISSI ✓
-    "BEST.JK",   # Bekasi Fajar Industrial — ISSI ✓
-    "KIJA.JK",   # Kawasan Industri Jababeka — ISSI ✓
-    "WSKT.JK",   # Waskita Karya — ISSI ✓ (konstruksi/properti)
-    "WIKA.JK",   # Wijaya Karya — ISSI ✓
-    "PTPP.JK",   # PP (Pembangunan Perumahan) — ISSI ✓
-    "ADHI.JK",   # Adhi Karya — ISSI ✓
-    "WEGE.JK",   # Wijaya Karya Bangunan Gedung — ISSI ✓
+    "CTRA.JK",   # Ciputra Development — DES I 2026 ✓
+    "PWON.JK",   # Pakuwon Jati — DES I 2026 ✓
+    "SMRA.JK",   # Summarecon Agung — DES I 2026 ✓
+    "DMAS.JK",   # Puradelta Lestari — DES I 2026 ✓
+    "BSDE.JK",   # Bumi Serpong Damai — DES I 2026 ✓
+    "BEST.JK",   # Bekasi Fajar Industrial — DES I 2026 ✓
+    "KIJA.JK",   # Kawasan Industri Jababeka — DES I 2026 ✓
+
+    # ================= CONSTRUCTION / INFRASTRUCTURE =================
+    "WSKT.JK",   # Waskita Karya — DES I 2026 ✓
+    "WIKA.JK",   # Wijaya Karya — DES I 2026 ✓
+    "PTPP.JK",   # PP (Pembangunan Perumahan) — DES I 2026 ✓
+    "ADHI.JK",   # Adhi Karya — DES I 2026 ✓
+    "WEGE.JK",   # Wijaya Karya Bangunan Gedung — DES I 2026 ✓
+    "JSMR.JK",   # Jasa Marga — DES I 2026 ✓
 
     # ================= INDUSTRIAL =================
-    "ASII.JK",   # Astra International — ISSI ✓
-    "UNTR.JK",   # United Tractors — ISSI ✓
-    "SMGR.JK",   # Semen Indonesia — ISSI ✓
-    "INTP.JK",   # Indocement — ISSI ✓
-    "IMPC.JK",   # Impack Pratama Industri — ISSI ✓
-    "SMSM.JK",   # Selamat Sempurna — ISSI ✓
-    "AUTO.JK",   # Astra Otoparts — ISSI ✓
-    "WOOD.JK",   # Integra Indocabinet — ISSI ✓
-    "MARK.JK",   # Mark Dynamics — ISSI ✓
-    "KBLI.JK",   # KMI Wire and Cable — ISSI ✓
-    "SCCO.JK",   # Supreme Cable Manufacturing — ISSI ✓
-
-    # ================= PLANTATION =================
-    "LSIP.JK",   # PP London Sumatra — ISSI ✓
-    "DSNG.JK",   # Dharma Satya Nusantara — ISSI ✓
-    "SIMP.JK",   # Salim Ivomas Pratama — ISSI ✓
-    "AALI.JK",   # Astra Agro Lestari — ISSI ✓
-    "TBLA.JK",   # Tunas Baru Lampung — ISSI ✓
-    "SSMS.JK",   # Sawit Sumbermas Sarana — ISSI ✓
-
-    # ================= MEDIA =================
-    "SCMA.JK",   # Surya Citra Media — ISSI ✓
-    "EMTK.JK",   # Elang Mahkota Teknologi — ISSI ✓
-
-    # ================= CHEMICAL / PAPER =================
-    "TKIM.JK",   # Pabrik Kertas Tjiwi Kimia — ISSI ✓
-    "INKP.JK",   # Indah Kiat Pulp & Paper — ISSI ✓
+    "UNTR.JK",   # United Tractors — DES I 2026 ✓
+    "IMPC.JK",   # Impack Pratama Industri — DES I 2026 ✓
+    "SMSM.JK",   # Selamat Sempurna — DES I 2026 ✓
+    "AUTO.JK",   # Astra Otoparts — DES I 2026 ✓
+    "WOOD.JK",   # Integra Indocabinet — DES I 2026 ✓
+    "MARK.JK",   # Mark Dynamics — DES I 2026 ✓
+    "KBLI.JK",   # KMI Wire and Cable — DES I 2026 ✓
+    "SCCO.JK",   # Supreme Cable Manufacturing — DES I 2026 ✓
 
     # ================= LOGISTICS =================
-    "ASSA.JK",   # Adi Sarana Armada — ISSI ✓
-    "TMAS.JK",   # Pelayaran Tempuran Emas — ISSI ✓
-    "SMDR.JK",   # Samudera Indonesia — ISSI ✓
-    "BIRD.JK",   # Blue Bird — ISSI ✓
-    "TRUK.JK",   # Guna Timur Raya — ISSI ✓
+    "ASSA.JK",   # Adi Sarana Armada — DES I 2026 ✓
+    "TMAS.JK",   # Temas (Pelayaran Tempuran Emas) — DES I 2026 ✓
+    "SMDR.JK",   # Samudera Indonesia — DES I 2026 ✓
+    "BIRD.JK",   # Blue Bird — DES I 2026 ✓
+    "TRUK.JK",   # Guna Timur Raya — DES I 2026 ✓
 
     # ================= TECHNOLOGY =================
-    "DCII.JK",   # DCI Indonesia (Data Center) — ISSI ✓
-    "MLPT.JK",   # Multipolar Technology — ISSI ✓
-    "MTDL.JK",   # Metrodata Electronics — ISSI ✓
+    "DCII.JK",   # DCI Indonesia (Data Center) — DES I 2026 ✓
+    "MLPT.JK",   # Multipolar Technology — DES I 2026 ✓
+    "MTDL.JK",   # Metrodata Electronics — DES I 2026 ✓
+    "CYBR.JK",   # ITSEC Asia — DES I 2026 ✓
 ]
 
 # =============================================================
@@ -154,33 +149,35 @@ SECTOR_MAP = {
     # ENERGY
     "ADRO": "Energy", "ADMR": "Energy", "ITMG": "Energy", "PTBA": "Energy",
     "HRUM": "Energy", "PGAS": "Energy", "MEDC": "Energy", "ELSA": "Energy",
-    "PGEO": "Energy", "BUMI": "Energy", "INDY": "Energy", "AKRA": "Energy",
+    "BUMI": "Energy", "INDY": "Energy", "AKRA": "Energy",
 
-    # MINING
-    "ANTM": "Mining", "INCO": "Mining", "MDKA": "Mining", "TINS": "Mining",
-    "NCKL": "Mining", "BRMS": "Mining", "HRTA": "Mining",
-    "AMMN": "Mining", "MBMA": "Mining",
+    # MINING / MATERIAL
+    "ANTM": "Mining", "MDKA": "Mining", "TINS": "Mining",
+    "BRMS": "Mining", "HRTA": "Mining", "MBMA": "Mining",
+    "INKP": "Chemical", "TKIM": "Chemical",
+    "INTP": "Industrial", "SMGR": "Industrial",
 
     # FINANCE SYARIAH
-    "BRIS": "Finance", "BPAM": "Finance", "PNLF": "Finance",
+    "BRIS": "Finance", "BTPS": "Finance", "SRTG": "Finance",
 
     # TELCO
-    "TLKM": "Telco", "EXCL": "Telco", "ISAT": "Telco",
-    "MTEL": "Telco", "TOWR": "Telco", "TBIG": "Telco",
+    "TLKM": "Telco", "EXCL": "Telco", "ISAT": "Telco", "MTEL": "Telco",
 
     # CONSUMER STAPLES
     "ICBP": "Consumer", "INDF": "Consumer", "CPIN": "Consumer", "JPFA": "Consumer",
     "SIDO": "Consumer", "ULTJ": "Consumer", "MYOR": "Consumer", "ROTI": "Consumer",
     "STTP": "Consumer", "CLEO": "Consumer", "GOOD": "Consumer",
-    "FOOD": "Consumer", "ICHI": "Consumer",
+    "FOOD": "Consumer", "DSNG": "Plantation", "SIMP": "Plantation",
+    "AALI": "Plantation", "LSIP": "Plantation",
 
     # CONSUMER DISCRETIONARY
-    "AMRT": "Consumer", "ACES": "Consumer", "ERAA": "Consumer", "MAPI": "Consumer",
+    "ACES": "Consumer", "ERAA": "Consumer", "MAPI": "Consumer",
     "RALS": "Consumer", "LPPF": "Consumer", "MAPB": "Consumer",
 
     # HEALTHCARE
     "MIKA": "Healthcare", "HEAL": "Healthcare", "KLBF": "Healthcare",
-    "SILO": "Healthcare", "SAME": "Healthcare", "MERK": "Healthcare", "PYFA": "Healthcare",
+    "SILO": "Healthcare", "SAME": "Healthcare", "MERK": "Healthcare",
+    "PYFA": "Healthcare", "TSPC": "Healthcare",
 
     # PROPERTY
     "CTRA": "Property", "PWON": "Property", "SMRA": "Property",
@@ -188,23 +185,12 @@ SECTOR_MAP = {
 
     # CONSTRUCTION
     "WSKT": "Construction", "WIKA": "Construction", "PTPP": "Construction",
-    "ADHI": "Construction", "WEGE": "Construction",
+    "ADHI": "Construction", "WEGE": "Construction", "JSMR": "Construction",
 
     # INDUSTRIAL
-    "ASII": "Industrial", "UNTR": "Industrial", "SMGR": "Industrial",
-    "INTP": "Industrial", "IMPC": "Industrial", "SMSM": "Industrial",
-    "AUTO": "Industrial", "WOOD": "Industrial", "MARK": "Industrial",
-    "KBLI": "Industrial", "SCCO": "Industrial",
-
-    # PLANTATION
-    "LSIP": "Plantation", "DSNG": "Plantation", "SIMP": "Plantation",
-    "AALI": "Plantation", "TBLA": "Plantation", "SSMS": "Plantation",
-
-    # MEDIA
-    "SCMA": "Media", "EMTK": "Media",
-
-    # CHEMICAL
-    "TKIM": "Chemical", "INKP": "Chemical",
+    "UNTR": "Industrial", "IMPC": "Industrial",
+    "SMSM": "Industrial", "AUTO": "Industrial", "WOOD": "Industrial",
+    "MARK": "Industrial", "KBLI": "Industrial", "SCCO": "Industrial",
 
     # LOGISTICS
     "ASSA": "Logistics", "TMAS": "Logistics", "SMDR": "Logistics",
@@ -212,6 +198,7 @@ SECTOR_MAP = {
 
     # TECHNOLOGY
     "DCII": "Technology", "MLPT": "Technology", "MTDL": "Technology",
+    "CYBR": "Technology",
 }
 
 # =============================================================
