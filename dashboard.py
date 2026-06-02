@@ -126,21 +126,22 @@ _telegram_lock = threading.Lock()
 # ============================================================
 # VERSION HISTORY
 # ============================================================
-APP_VERSION  = "V5.6.8"
-APP_UPDATED  = "30 Mei 2026"
+APP_VERSION  = "V5.7.0"
+APP_UPDATED  = "2 Jun 2026"
 
 VERSION_HISTORY = [
     {
-        "versi":   "V5.6.8",
-        "tanggal": "30 Mei 2026",
-        "tipe":    "Universe Sync — OJK DES Periode I 2026",
-        "ringkasan": "Sinkronisasi ISSI universe dengan OJK KEP-21/D.04/2026 (21 Mei 2026): 15 ticker dihapus, 4 ticker baru ditambah",
+        "versi":   "V5.7.0",
+        "tanggal": "2 Jun 2026",
+        "tipe":    "Bear Mode — Adaptive Threshold for DISTRIBUTION Regime",
+        "ringkasan": "Threshold otomatis longgar saat regime DISTRIBUTION: RR 1.8→1.3, Confluence 3→2, Breakout WAIT+bandar diizinkan",
         "detail": [
-            "[UNIVERSE] Referensi diupdate: DES Periode II 2024 → DES Periode I 2026",
-            "[UNIVERSE] 15 ticker DIHAPUS (keluar dari DES): AMMN, AMRT, ASII, BPAM, EMTK, ICHI, INCO, NCKL, PGEO, PNLF, SCMA, SSMS, TBIG, TBLA, TOWR",
-            "[UNIVERSE] 4 ticker DITAMBAH: BTPS (Bank BTPN Syariah), SRTG (Saratoga), JSMR (Jasa Marga), CYBR (ITSEC Asia)",
-            "[UNIVERSE] TSPC (Tempo Scan Pacific) dikonfirmasi masuk DES I 2026",
-            "[SECTOR] SECTOR_MAP diupdate sesuai perubahan universe",
+            "[BEAR MODE] is_bear_mode() aktif saat regime=DISTRIBUTION",
+            "[BEAR MODE] RR minimum: 1.8 → 1.3 saat DISTRIBUTION",
+            "[BEAR MODE] Confluence minimum: 3/6 → 2/6 saat DISTRIBUTION",
+            "[BEAR MODE] Breakout WAIT + bandar>=2 diizinkan lolos saat DISTRIBUTION",
+            "[BEAR MODE] Threshold kembali normal otomatis saat regime SIDEWAYS/BULLISH",
+            "[FIX] get_bear_mode_params() sebagai single source of truth semua threshold",
         ]
     },
     {
@@ -1161,20 +1162,46 @@ def calculate_score(prob: float, runner: float, quality: str,
 # CONFLUENCE
 # ============================================================
 # [K2] Confluence check dengan minimum adaptif per regime
+def is_bear_mode(regime: str) -> bool:
+    """
+    [BEAR MODE V5.7.0] Aktif saat regime DISTRIBUTION.
+    Longgarkan threshold agar signal tetap muncul di bear market.
+    Threshold kembali ketat otomatis saat regime berubah ke SIDEWAYS/BULLISH.
+    """
+    return regime == "DISTRIBUTION"
+
+def get_bear_mode_params(regime: str) -> dict:
+    """Return threshold params sesuai kondisi market."""
+    if is_bear_mode(regime):
+        return {
+            "rr_min":       1.3,   # turun dari 1.8
+            "conf_min":     2,     # turun dari 3
+            "rr_confluence": 1.3,  # RR_Layak di confluence
+            "score_min":    60,    # turun dari 70
+            "label":        "🐻 BEAR MODE",
+        }
+    return {
+        "rr_min":       1.8,
+        "conf_min":     4 if regime == "BULLISH" else 3,
+        "rr_confluence": 1.8,
+        "score_min":    70,
+        "label":        "NORMAL",
+    }
+
 def confluence_check(momentum: int, accum: int, bandar: int,
                      breakout: str, rr: float, ema_ok: bool,
                      regime: str = "SIDEWAYS") -> tuple[int, dict, bool]:
+    bm = get_bear_mode_params(regime)
     signals = {
         "Momentum":     momentum >= 1,
         "Accumulation": accum >= 2,
         "Bandar":       bandar >= 2,
         "Breakout":     breakout in ("VALID", "WEAK"),
-        "RR_Layak":     rr >= 1.8,
+        "RR_Layak":     rr >= bm["rr_confluence"],
         "Uptrend":      ema_ok,
     }
     count = sum(signals.values())
-    # Minimum adaptif: BULLISH butuh 4/6, kondisi lain cukup 3/6
-    min_conf = 4 if regime == "BULLISH" else 3
+    min_conf = bm["conf_min"]
     return count, signals, count >= min_conf
 
 # ============================================================
@@ -1872,17 +1899,18 @@ def scan_core(market: dict, balance: float, top_n: int = 5,
                     "❌ Gugur di": f"Entry expired: naik {chg_pct:.1f}% (batas {freshness_limit:.1f}% untuk breakout {breakout})"})
                 continue
 
-            # Filter 3: Breakout gate — [V5.6.3] Bandar dipisah dari hard gate.
-            # Bandar tetap masuk confluence (1/6) + scoring, tapi bukan blocker mandatory.
-            # Root cause: bandar & breakout berkorelasi tinggi → dual hard gate → 0 signal
-            # selama pasar konsolidasi/akumulasi. Fix: hanya breakout yg jadi hard gate.
+            # Filter 3: Breakout gate — [BEAR MODE V5.7.0]
+            # Bear mode: WAIT + bandar >= 2 = boleh lolos (akumulasi senyap di bear market)
+            # Normal mode: WAIT = hard gate seperti sebelumnya
             if breakout == "WAIT":
-                debug_log.append({"Ticker": tkr_clean, "Sector": sector,
-                    "RSI": round(rsi_value, 1), "EMA_OK": "✅" if ema_ok else "❌",
-                    "Bandar": bandar, "Breakout": breakout,
-                    "Confluence": "-", "RR": round(rr, 1), "Score": "-",
-                    "❌ Gugur di": "Breakout WAIT"})
-                continue
+                bear_allow = is_bear_mode(regime) and bandar >= 2
+                if not bear_allow:
+                    debug_log.append({"Ticker": tkr_clean, "Sector": sector,
+                        "RSI": round(rsi_value, 1), "EMA_OK": "✅" if ema_ok else "❌",
+                        "Bandar": bandar, "Breakout": breakout,
+                        "Confluence": "-", "RR": round(rr, 1), "Score": "-",
+                        "❌ Gugur di": "Breakout WAIT"})
+                    continue
 
             intraday = intraday_confirm(ticker)
             prob     = runner_probability(df)
@@ -1925,13 +1953,15 @@ def scan_core(market: dict, balance: float, top_n: int = 5,
                     "❌ Gugur di": f"Confluence {conf_count}/6 < {min_c} (gagal: {', '.join(failed)})"})
                 continue
 
-            # Filter 5: RR
-            if rr < 1.8:
+            # Filter 5: RR — [BEAR MODE V5.7.0] threshold adaptif
+            bm_params = get_bear_mode_params(regime)
+            rr_min = bm_params["rr_min"]
+            if rr < rr_min:
                 debug_log.append({"Ticker": tkr_clean, "Sector": sector,
                     "RSI": round(rsi_value, 1), "EMA_OK": "✅" if ema_ok else "❌",
                     "Bandar": bandar, "Breakout": breakout,
                     "Confluence": f"{conf_count}/6", "RR": round(rr, 1), "Score": "-",
-                    "❌ Gugur di": f"RR terlalu rendah ({rr:.1f}, min 1.8)"})
+                    "❌ Gugur di": f"RR terlalu rendah ({rr:.1f}, min {rr_min} [{bm_params[chr(39)]+'label'+chr(39)}])"})
                 continue
 
             # Filter 6: Slow Mover Detection — perketat untuk saham seperti SCCO, DMAS
@@ -3548,7 +3578,7 @@ Profit beruntun bukan alasan menaikkan size mendadak — streak bagus = market c
     with pt1:
         st.markdown("""
 **🤖 ATS SuperEngine**
-- Universe: 87 saham ISSI — DES I 2026 (luas)
+- Universe: 98 saham ISSI (luas)
 - Setup: Breakout + Bandar detection
 - Hold: Tidak ada batas waktu
 - Target: Single target, RR min 1.8×
