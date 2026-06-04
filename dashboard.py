@@ -126,10 +126,24 @@ _telegram_lock = threading.Lock()
 # ============================================================
 # VERSION HISTORY
 # ============================================================
-APP_VERSION  = "V5.7.0"
-APP_UPDATED  = "2 Jun 2026"
+APP_VERSION  = "V5.8.0"
+APP_UPDATED  = "4 Jun 2026"
 
 VERSION_HISTORY = [
+    {
+        "versi":   "V5.8.0",
+        "tanggal": "4 Jun 2026",
+        "tipe":    "Feature — Breakout Yesterday High Scanner",
+        "ringkasan": "Scanner baru: breakout harga tertinggi kemarin, scan otomatis per 15 menit jam 09:00–10:00, konfirmasi jam 10:00, report ke Telegram",
+        "detail": [
+            "[NEW] scan_breakout_yesterday_high(): loop ISSI universe, close > high H-1",
+            "[NEW] Scheduler: scan tiap 15 menit jam 09:00-10:00 WIB (09:00, 09:15, 09:30, 09:45, 10:00)",
+            "[NEW] Tab 🚀 BREAKOUT SCAN: UI manual trigger + live result table",
+            "[NEW] Format Telegram: list breakout sorted by % breakout terbesar",
+            "[NEW] Filter volume > 0 untuk skip saham zombie",
+            "[INFO] Raw breakout — tidak ada filter tambahan, konfirmasi manual TF 15m",
+        ]
+    },
     {
         "versi":   "V5.7.0",
         "tanggal": "2 Jun 2026",
@@ -2775,6 +2789,99 @@ def mini_scan_spike(spike_candidates: list, regime: str = "SIDEWAYS"):
 
 
 # ============================================================
+# 🚀 BREAKOUT YESTERDAY HIGH SCANNER — V5.8.0
+# Logic  : close hari ini > high daily kemarin
+# Filter : volume > 0 (skip saham zombie)
+# Output : sorted by breakout_pct DESC → Telegram + UI
+# Schedule: tiap 15 menit jam 09:00–10:00 WIB
+# ============================================================
+
+def scan_breakout_yesterday_high(universe: list) -> list:
+    """
+    Scan semua ticker di universe.
+    Return list of dict sorted by breakout_pct DESC.
+    """
+    results = []
+    for ticker in universe:
+        try:
+            df = yf.download(
+                ticker, period="5d", interval="1d",
+                progress=False, auto_adjust=True,
+            )
+            if df is None or len(df) < 2:
+                continue
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+
+            high_kemarin    = float(df["High"].iloc[-2])
+            close_hari_ini  = float(df["Close"].iloc[-1])
+            volume_hari_ini = float(df["Volume"].iloc[-1])
+
+            if volume_hari_ini <= 0:
+                continue
+            if close_hari_ini > high_kemarin:
+                pct = (close_hari_ini - high_kemarin) / high_kemarin * 100
+                results.append({
+                    "ticker":       ticker.replace(".JK", ""),
+                    "harga":        close_hari_ini,
+                    "high_kemarin": high_kemarin,
+                    "breakout_pct": round(pct, 2),
+                    "volume_b":     round(volume_hari_ini / 1e9, 1),
+                })
+        except Exception as e:
+            LOG.warning(f"breakout_scan | {ticker} | {e}")
+            continue
+
+    results.sort(key=lambda x: x["breakout_pct"], reverse=True)
+    LOG.info(f"breakout_scan | scanned={len(universe)} breakout={len(results)}")
+    return results
+
+
+def format_breakout_telegram(results: list, label: str = "") -> str:
+    """Format hasil breakout scan jadi pesan Telegram."""
+    now_str = datetime.now(WIB).strftime("%d %b %Y %H:%M WIB")
+    tag = f" [{label}]" if label else ""
+
+    if not results:
+        return (
+            f"🔍 BREAKOUT SCAN{tag} — {now_str}\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"Tidak ada saham ISSI breakout high kemarin."
+        )
+
+    lines = [
+        f"🚀 BREAKOUT SCAN{tag} — {now_str}",
+        f"━━━━━━━━━━━━━━━━━━━━",
+        f"Close > High H-1  |  {len(results)} saham\n",
+    ]
+    for i, r in enumerate(results, 1):
+        lines.append(
+            f"{i}. {r['ticker']}  +{r['breakout_pct']:.1f}%\n"
+            f"   Harga {r['harga']:,.0f}  |  H-1 {r['high_kemarin']:,.0f}"
+            f"  |  Vol {r['volume_b']:.1f}B"
+        )
+    lines.append("\n⚠ Raw breakout — konfirmasi TF 15m sebelum entry")
+    return "\n".join(lines)
+
+
+# State simpan hasil breakout terakhir (thread-safe via _state_lock)
+_breakout_last: dict = {"results": [], "ts": None, "label": ""}
+
+def _breakout_job(label: str = ""):
+    """Job dipanggil scheduler — scan + kirim Telegram."""
+    if not is_trading_day():
+        return
+    results = scan_breakout_yesterday_high(ISSI_UNIVERSE)
+    msg     = format_breakout_telegram(results, label)
+    send_telegram(msg)
+    with _state_lock:
+        _breakout_last["results"] = results
+        _breakout_last["ts"]      = datetime.now(WIB).strftime("%H:%M WIB")
+        _breakout_last["label"]   = label
+    LOG.info(f"_breakout_job | label={label} results={len(results)}")
+
+
+# ============================================================
 @st.cache_resource
 def start_scheduler():
     scheduler = BackgroundScheduler(timezone=WIB)
@@ -2848,6 +2955,33 @@ def start_scheduler():
         misfire_grace_time = 60,
     )
 
+    # ── [V5.8.0] Breakout Yesterday High — scan per 15 menit 09:00–10:00 ──
+    # Tangkap breakout di jam panas pembukaan bursa
+    # 09:00 = pre-breakout (data kemarin vs open hari ini)
+    # 09:15, 09:30, 09:45 = monitor progression
+    # 10:00 = konfirmasi final 1 jam pertama
+    _breakout_schedule = [
+        {"hour": 9,  "minute": 0,  "label": "09:00 Open"},
+        {"hour": 9,  "minute": 15, "label": "09:15"},
+        {"hour": 9,  "minute": 30, "label": "09:30"},
+        {"hour": 9,  "minute": 45, "label": "09:45"},
+        {"hour": 10, "minute": 0,  "label": "10:00 Konfirmasi"},
+    ]
+    for bs in _breakout_schedule:
+        scheduler.add_job(
+            func    = lambda lbl=bs["label"]: _breakout_job(lbl),
+            trigger = CronTrigger(
+                day_of_week = "mon-fri",
+                hour        = bs["hour"],
+                minute      = bs["minute"],
+                timezone    = WIB,
+            ),
+            id               = f"breakout_{bs['hour']:02d}{bs['minute']:02d}",
+            name             = f"Breakout Scan {bs['label']}",
+            replace_existing = True,
+            misfire_grace_time = 60,
+        )
+
     scheduler.start()
 
     # Notifikasi startup
@@ -2856,6 +2990,7 @@ def start_scheduler():
         f"⏰ {datetime.now(WIB).strftime('%Y-%m-%d %H:%M WIB')}\n"
         f"Full scan: 09:05 | 09:30 | 11:30 | 13:35 | 15:00 WIB\n"
         f"Intraday refresh: setiap 15 menit jam bursa\n"
+        f"🚀 Breakout scan: 09:00 | 09:15 | 09:30 | 09:45 | 10:00 WIB\n"
         f"⚡ Spike detection aktif — tidak akan ketinggalan pergerakan ✅"
     )
     return scheduler
@@ -3196,7 +3331,7 @@ header_html = (
 
 st.markdown(header_html, unsafe_allow_html=True)
 
-tabs = st.tabs(["📖 HOW TO USE", "📊 TRADING DESK", "💼 ACCOUNT", "📋 REPORT", "🕌 ISSI CHECK", "🔬 DEEP ANALYSIS", "🦅 FALCON HUNTER", "🎯 BANDAR HUNTER", "📚 WISDOM"])
+tabs = st.tabs(["📖 HOW TO USE", "📊 TRADING DESK", "💼 ACCOUNT", "📋 REPORT", "🕌 ISSI CHECK", "🔬 DEEP ANALYSIS", "🦅 FALCON HUNTER", "🎯 BANDAR HUNTER", "🚀 BREAKOUT SCAN", "📚 WISDOM"])
 
 # ─────────────────────────────────────────────────────────────
 # TAB 0 — HOW TO USE
@@ -5270,8 +5405,111 @@ Karena itu mereka bergerak dengan **pola yang bisa dideteksi**:
 
 st.divider()
 
-# ── TAB 8 — WISDOM ────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+# TAB 8 — 🚀 BREAKOUT SCAN
+# ─────────────────────────────────────────────────────────────
 with tabs[8]:
+    st.markdown("## 🚀 Breakout Yesterday High — ISSI Scanner")
+    st.caption(
+        "Scan otomatis setiap 15 menit jam 09:00–10:00 WIB. "
+        "Logic: **Close hari ini > High daily kemarin**. "
+        "Raw breakout — filter manual TF 15m sebelum entry."
+    )
+
+    # ── Info jadwal ───────────────────────────────────────────
+    st.info(
+        "**Jadwal scan otomatis:** 09:00 | 09:15 | 09:30 | 09:45 | **10:00 (Konfirmasi)**\n\n"
+        "Hasil dikirim langsung ke Telegram. Tab ini untuk trigger manual dan lihat hasil terakhir."
+    )
+
+    col_b1, col_b2, _ = st.columns([1, 1, 3])
+    with col_b1:
+        do_breakout_scan = st.button(
+            "🚀 Scan Breakout Sekarang",
+            type="primary", use_container_width=True,
+        )
+    with col_b2:
+        send_tg_bo = st.checkbox("Kirim Telegram", value=True, key="bo_send_tg")
+
+    # ── Manual trigger ────────────────────────────────────────
+    if do_breakout_scan:
+        prog_bo = st.progress(0, text="🔍 Scanning ISSI universe...")
+        bo_results = scan_breakout_yesterday_high(ISSI_UNIVERSE)
+        prog_bo.progress(100, text=f"✅ Selesai — {len(bo_results)} breakout ditemukan")
+
+        # Update shared state
+        with _state_lock:
+            _breakout_last["results"] = bo_results
+            _breakout_last["ts"]      = datetime.now(WIB).strftime("%H:%M WIB")
+            _breakout_last["label"]   = "Manual"
+
+        if st.session_state.get("bo_send_tg", True):
+            msg = format_breakout_telegram(bo_results, "Manual")
+            ok  = send_telegram(msg)
+            if ok:
+                st.success(f"✅ Telegram terkirim — {len(bo_results)} breakout")
+            else:
+                st.warning("⚠️ Scan selesai tapi Telegram gagal — cek Railway Variables")
+        time.sleep(0.3)
+        prog_bo.empty()
+
+    # ── Display hasil terakhir ────────────────────────────────
+    last_results = _breakout_last.get("results", [])
+    last_ts      = _breakout_last.get("ts", None)
+    last_label   = _breakout_last.get("label", "")
+
+    st.markdown("---")
+    if not last_results and not last_ts:
+        st.info("Belum ada data. Klik **Scan Breakout Sekarang** atau tunggu scan otomatis jam 09:00 WIB.")
+    else:
+        st.caption(
+            f"Scan terakhir: **{last_ts or '-'}** [{last_label}]  |  "
+            f"**{len(last_results)} saham** breakout high kemarin"
+        )
+
+        if not last_results:
+            st.warning("Tidak ada saham ISSI yang breakout high kemarin saat scan terakhir.")
+        else:
+            # Summary metrics
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Total Breakout", len(last_results))
+            m2.metric("Breakout Terbesar", f"{last_results[0]['ticker']}  +{last_results[0]['breakout_pct']:.1f}%")
+            m3.metric("Breakout Terkecil", f"{last_results[-1]['ticker']}  +{last_results[-1]['breakout_pct']:.1f}%")
+
+            st.markdown("---")
+
+            # Tabel hasil
+            df_bo = pd.DataFrame(last_results)
+            df_bo.columns = ["Ticker", "Harga", "High H-1", "Breakout %", "Vol (B)"]
+            df_bo.index   = range(1, len(df_bo) + 1)
+
+            st.dataframe(
+                df_bo.style.background_gradient(
+                    subset=["Breakout %"],
+                    cmap="RdYlGn", vmin=0, vmax=5
+                ).format({
+                    "Harga":       "{:,.0f}",
+                    "High H-1":    "{:,.0f}",
+                    "Breakout %":  "{:.2f}%",
+                    "Vol (B)":     "{:.1f}B",
+                }),
+                use_container_width=True,
+            )
+
+            st.caption(
+                "⚠️ **Raw breakout tanpa filter tambahan.** "
+                "Konfirmasi wajib di chart TF 15m sebelum entry: "
+                "candle close di atas level High H-1, volume naik, tidak overbought."
+            )
+
+            # Kirim ulang Telegram
+            if st.button("📤 Kirim Ulang ke Telegram", key="bo_resend"):
+                msg = format_breakout_telegram(last_results, f"Resend {last_ts or ''}")
+                ok  = send_telegram(msg)
+                st.success("✅ Telegram terkirim") if ok else st.error("❌ Telegram gagal")
+
+# ── TAB 9 — WISDOM ────────────────────────────────────────────
+with tabs[9]:
     st.markdown("## 📚 Jesse Livermore — Wisdom & Vocabulary")
     st.caption(
         "Kutipan legendaris dari Reminiscences of a Stock Operator & How to Trade in Stocks. "
