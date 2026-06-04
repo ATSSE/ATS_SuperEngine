@@ -5484,10 +5484,7 @@ with tabs[8]:
             df_bo.index   = range(1, len(df_bo) + 1)
 
             st.dataframe(
-                df_bo.style.background_gradient(
-                    subset=["Breakout %"],
-                    cmap="RdYlGn", vmin=0, vmax=5
-                ).format({
+                df_bo.style.format({
                     "Harga":       "{:,.0f}",
                     "High H-1":    "{:,.0f}",
                     "Breakout %":  "{:.2f}%",
