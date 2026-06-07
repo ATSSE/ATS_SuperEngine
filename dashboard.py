@@ -2311,6 +2311,12 @@ def run_scanner():
             st.session_state.dynamic_thresholds = thresholds
             st.session_state.last_regime = regime
             st.session_state.sector_table = sector_df
+            # [FIX HEATMAP] Build heatmap data dari market yang sudah di-load
+            try:
+                st.session_state.heatmap_data = build_heatmap_data(market)
+            except Exception as _hm_err:
+                LOG.warning(f"build_heatmap_data gagal: {_hm_err}")
+                st.session_state.heatmap_data = None
             
         except Exception as e:
             st.error(f"❌ Scanner Crash: {type(e).__name__}: {str(e)}")
@@ -3331,7 +3337,7 @@ header_html = (
 
 st.markdown(header_html, unsafe_allow_html=True)
 
-tabs = st.tabs(["📖 HOW TO USE", "📊 TRADING DESK", "💼 ACCOUNT", "📋 REPORT", "🕌 ISSI CHECK", "🎯 BANDAR HUNTER", "🚀 BREAKOUT SCAN", "📚 WISDOM"])
+tabs = st.tabs(["📖 HOW TO USE", "📊 TRADING DESK", "💼 ACCOUNT", "📋 REPORT", "🕌 ISSI CHECK", "🎯 BANDAR HUNTER", "🚀 BREAKOUT SCAN", "🗂️ STOCKBIT TRACKER", "📚 WISDOM"])
 
 # ─────────────────────────────────────────────────────────────
 # TAB 0 — HOW TO USE
@@ -4845,6 +4851,210 @@ with tabs[6]:
 
 # ── TAB 9 — WISDOM ────────────────────────────────────────────
 with tabs[7]:
+    # ─────────────────────────────────────────────────────────────
+    # TAB 8 — 🗂️ STOCKBIT TRACKER (Bandar Hunter Manual)
+    # ─────────────────────────────────────────────────────────────
+    st.markdown("## 🗂️ Stockbit Screener Tracker")
+    st.caption(
+        "Catat hasil screening manual dari Stockbit. "
+        "Saham yang konsisten muncul di banyak screener = kandidat prioritas open posisi."
+    )
+
+    from config.universe import ISSI_UNIVERSE as _ISSI_RAW
+
+    _TICKERS_CLEAN = sorted([t.replace(".JK", "") for t in _ISSI_RAW])
+
+    _SCREENERS = [
+        {"key": "big_akum",         "label": "Big Akumulasi",      "color": "#00C896"},
+        {"key": "foreign_uptrend",  "label": "Foreign Uptrend",    "color": "#4DA6FF"},
+        {"key": "net_foreign_1m",   "label": "Net Foreign 1M",     "color": "#A78BFA"},
+        {"key": "hv_breakout",      "label": "High Vol Breakout",  "color": "#FB923C"},
+    ]
+
+    # ── Session state init ─────────────────────────────────────
+    if "sbt_date" not in st.session_state:
+        st.session_state.sbt_date = date.today()
+    if "sbt_data" not in st.session_state:
+        st.session_state.sbt_data = {}   # key: "YYYY-MM-DD_TICKER_screener_key"
+    if "sbt_notes" not in st.session_state:
+        st.session_state.sbt_notes = {}  # key: "YYYY-MM-DD_TICKER"
+
+    def _sbt_key(ticker, screener_key):
+        d = str(st.session_state.sbt_date)
+        return f"{d}_{ticker}_{screener_key}"
+
+    def _sbt_score(ticker):
+        return sum(1 for s in _SCREENERS if st.session_state.sbt_data.get(_sbt_key(ticker, s["key"]), False))
+
+    # ── Header bar ─────────────────────────────────────────────
+    col_d, col_exp = st.columns([2, 1])
+    with col_d:
+        new_date = st.date_input("📅 Tanggal Screening", value=st.session_state.sbt_date, key="sbt_date_input")
+        if new_date != st.session_state.sbt_date:
+            st.session_state.sbt_date = new_date
+            st.rerun()
+    with col_exp:
+        st.markdown("<br>", unsafe_allow_html=True)
+        # Export CSV
+        _rows = [["Ticker"] + [s["label"] for s in _SCREENERS] + ["Skor", "Notes"]]
+        for _t in _TICKERS_CLEAN:
+            _sc = _sbt_score(_t)
+            if _sc > 0:
+                _row = [_t]
+                for _s in _SCREENERS:
+                    _row.append("✓" if st.session_state.sbt_data.get(_sbt_key(_t, _s["key"]), False) else "")
+                _row.append(_sc)
+                _row.append(st.session_state.sbt_notes.get(f"{st.session_state.sbt_date}_{_t}", ""))
+                _rows.append(_row)
+        import io as _io
+        _csv_buf = _io.StringIO()
+        for _r in _rows:
+            _csv_buf.write(",".join(str(x) for x in _r) + "\n")
+        st.download_button(
+            "⬇️ Export CSV",
+            data=_csv_buf.getvalue(),
+            file_name=f"stockbit_scan_{st.session_state.sbt_date}.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+    # ── Stats bar ──────────────────────────────────────────────
+    _detected  = sum(1 for t in _TICKERS_CLEAN if _sbt_score(t) > 0)
+    _score3    = sum(1 for t in _TICKERS_CLEAN if _sbt_score(t) == 3)
+    _score4    = sum(1 for t in _TICKERS_CLEAN if _sbt_score(t) == 4)
+    mc1, mc2, mc3 = st.columns(3)
+    mc1.metric("Terdeteksi", _detected)
+    mc2.metric("Skor 3 ⚡",  _score3)
+    mc3.metric("Skor 4 🔥",  _score4)
+
+    st.markdown("---")
+
+    # ── Tab: Input vs Watchlist ────────────────────────────────
+    sbt_tab1, sbt_tab2 = st.tabs(["📋 Input Screener", f"🚀 Watchlist Skor ≥ 3"])
+
+    with sbt_tab1:
+        # Filter row
+        fc1, fc2, fc3 = st.columns([2, 3, 1])
+        with fc1:
+            _search = st.text_input("🔍 Cari ticker", key="sbt_search", placeholder="BBRI, TLKM...").upper()
+        with fc2:
+            _min_score = st.radio("Min Skor", [0, 1, 2, 3, 4], horizontal=True, key="sbt_minscore")
+        with fc3:
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.caption(f"{len(_TICKERS_CLEAN)} ticker ISSI")
+
+        _filtered = [t for t in _TICKERS_CLEAN
+                     if (_search in t or _search == "")
+                     and _sbt_score(t) >= _min_score]
+        _filtered_sorted = sorted(_filtered, key=lambda t: (-_sbt_score(t), t))
+
+        # Screener legend
+        leg_cols = st.columns(len(_SCREENERS))
+        for i, s in enumerate(_SCREENERS):
+            with leg_cols[i]:
+                st.markdown(
+                    f'<span style="background:{s["color"]}22;color:{s["color"]};'
+                    f'padding:3px 10px;border-radius:4px;font-size:12px;font-weight:600;">'
+                    f'{s["label"]}</span>',
+                    unsafe_allow_html=True
+                )
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # Table header
+        hdr = st.columns([1.5, 1, 1, 1, 1, 0.5, 2])
+        hdr[0].markdown("**Ticker**")
+        for i, s in enumerate(_SCREENERS):
+            hdr[i+1].markdown(f"**{s['label'][:6]}…**" if len(s['label']) > 6 else f"**{s['label']}**")
+        hdr[5].markdown("**Skor**")
+        hdr[6].markdown("**Notes**")
+
+        for _t in _filtered_sorted:
+            _score = _sbt_score(_t)
+            _cols  = st.columns([1.5, 1, 1, 1, 1, 0.5, 2])
+
+            # Ticker label — highlight kalau skor tinggi
+            _color = "#00C896" if _score >= 3 else ("#FB923C" if _score == 2 else "#94a3b8")
+            _cols[0].markdown(
+                f'<span style="color:{_color};font-weight:700;font-size:14px;">'
+                f'{"🔥 " if _score == 4 else ""}{_t}</span>',
+                unsafe_allow_html=True
+            )
+
+            for i, s in enumerate(_SCREENERS):
+                _k = _sbt_key(_t, s["key"])
+                _active = st.session_state.sbt_data.get(_k, False)
+                if _cols[i+1].checkbox(
+                    " ", value=_active,
+                    key=f"sbt_chk_{_t}_{s['key']}",
+                    label_visibility="collapsed"
+                ):
+                    st.session_state.sbt_data[_k] = True
+                else:
+                    st.session_state.sbt_data[_k] = False
+
+            # Skor badge
+            _badge_color = "#00C896" if _score == 4 else "#4DA6FF" if _score == 3 else "#FB923C" if _score == 2 else "#475569"
+            _cols[5].markdown(
+                f'<span style="color:{_badge_color};font-weight:700;font-size:15px;">'
+                f'{"" if _score == 0 else _score}</span>',
+                unsafe_allow_html=True
+            )
+
+            # Notes
+            _note_key = f"{st.session_state.sbt_date}_{_t}"
+            _note_val = st.session_state.sbt_notes.get(_note_key, "")
+            _new_note = _cols[6].text_input(
+                " ", value=_note_val,
+                key=f"sbt_note_{_t}",
+                placeholder="PA, level, SL...",
+                label_visibility="collapsed"
+            )
+            if _new_note != _note_val:
+                st.session_state.sbt_notes[_note_key] = _new_note
+
+    with sbt_tab2:
+        _watchlist = sorted(
+            [t for t in _TICKERS_CLEAN if _sbt_score(t) >= 3],
+            key=lambda t: (-_sbt_score(t), t)
+        )
+        if not _watchlist:
+            st.info("Belum ada saham dengan skor ≥ 3 hari ini. Isi dulu di tab Input Screener.")
+        else:
+            st.caption(f"📌 {len(_watchlist)} kandidat — konfirmasi Price Action sebelum open posisi")
+            wl_cols = st.columns(3)
+            for idx, _t in enumerate(_watchlist):
+                _sc = _sbt_score(_t)
+                _active_screeners = [s["label"] for s in _SCREENERS
+                                     if st.session_state.sbt_data.get(_sbt_key(_t, s["key"]), False)]
+                _note_txt = st.session_state.sbt_notes.get(f"{st.session_state.sbt_date}_{_t}", "")
+                _border_c = "#00C896" if _sc == 4 else "#4DA6FF"
+                with wl_cols[idx % 3]:
+                    with st.container(border=True):
+                        st.markdown(
+                            f'<div style="display:flex;justify-content:space-between;align-items:center;">'
+                            f'<span style="color:{_border_c};font-size:18px;font-weight:700;letter-spacing:2px;">'
+                            f'{"🔥 " if _sc == 4 else ""}{_t}</span>'
+                            f'<span style="color:{_border_c};font-weight:700;font-size:16px;">{_sc}/4</span>'
+                            f'</div>',
+                            unsafe_allow_html=True
+                        )
+                        # Screener badges
+                        _badge_html = " ".join(
+                            f'<span style="background:{s["color"]}22;color:{s["color"]};'
+                            f'padding:2px 8px;border-radius:3px;font-size:11px;margin:2px;">'
+                            f'{s["label"]}</span>'
+                            for s in _SCREENERS
+                            if st.session_state.sbt_data.get(_sbt_key(_t, s["key"]), False)
+                        )
+                        st.markdown(_badge_html, unsafe_allow_html=True)
+                        if _note_txt:
+                            st.caption(f"📝 {_note_txt}")
+
+    st.markdown("---")
+    st.caption("💡 Skor ≥ 3 = kandidat kuat. Tetap wajib konfirmasi Price Action D1 sebelum entry.")
+
+with tabs[8]:
     st.markdown("## 📚 Jesse Livermore — Wisdom & Vocabulary")
     st.caption(
         "Kutipan legendaris dari Reminiscences of a Stock Operator & How to Trade in Stocks. "
