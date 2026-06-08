@@ -4861,6 +4861,7 @@ with tabs[6]:
 
             # Tabel hasil
             df_bo = pd.DataFrame(last_results)
+            df_bo = df_bo.drop(columns=["tgl_kemarin"], errors="ignore")
             df_bo.columns = ["Ticker", "Harga", "High H-1", "Breakout %", "Vol (B)"]
             df_bo.index   = range(1, len(df_bo) + 1)
 
