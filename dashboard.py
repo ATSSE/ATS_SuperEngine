@@ -2806,12 +2806,23 @@ def scan_breakout_yesterday_high(universe: list) -> list:
     """
     Scan semua ticker di universe.
     Return list of dict sorted by breakout_pct DESC.
+
+    [FIX] Gunakan filter tanggal eksplisit (bukan iloc[-2])
+    untuk menghindari mismatch timezone yfinance vs IDX.
+    - "Kemarin" = hari bursa terakhir sebelum hari ini WIB
+    - "Hari ini" = candle dengan tanggal == today WIB
+    - Kalau candle hari ini belum ada (pre-market), pakai iloc[-1] vs iloc[-2]
+      tapi tetap validasi tanggalnya.
     """
-    results = []
+    import pytz
+    results  = []
+    tz_wib   = pytz.timezone("Asia/Jakarta")
+    today_wib = datetime.now(tz_wib).date()
+
     for ticker in universe:
         try:
             df = yf.download(
-                ticker, period="5d", interval="1d",
+                ticker, period="7d", interval="1d",   # 7d biar dapat minimal 3 hari bursa
                 progress=False, auto_adjust=True,
             )
             if df is None or len(df) < 2:
@@ -2819,20 +2830,46 @@ def scan_breakout_yesterday_high(universe: list) -> list:
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
 
-            high_kemarin    = float(df["High"].iloc[-2])
-            close_hari_ini  = float(df["Close"].iloc[-1])
-            volume_hari_ini = float(df["Volume"].iloc[-1])
+            # Normalisasi index ke date (hilangkan timezone UTC yfinance)
+            df.index = pd.to_datetime(df.index).tz_localize(None).normalize()
+            df = df[df.index.date <= today_wib]  # buang candle masa depan
+            df = df.sort_index()
 
-            if volume_hari_ini <= 0:
+            if len(df) < 2:
                 continue
+
+            # Cari candle hari ini (jika sudah ada) atau candle terbaru
+            last_date  = df.index[-1].date()
+            is_today   = (last_date == today_wib)
+
+            if is_today and len(df) >= 2:
+                # Ada candle hari ini → ambil H-1 = candle sebelumnya
+                row_today     = df.iloc[-1]
+                row_kemarin   = df.iloc[-2]
+            else:
+                # Candle hari ini belum ada (pre-open) → skip, belum bisa compare
+                continue
+
+            high_kemarin    = float(row_kemarin["High"])
+            close_hari_ini  = float(row_today["Close"])
+            volume_hari_ini = float(row_today["Volume"])
+
+            # Validasi: high_kemarin harus masuk akal (> 0)
+            if high_kemarin <= 0 or volume_hari_ini <= 0:
+                continue
+
+            # Filter minimum breakout 0.5% untuk hindari floating point noise
             if close_hari_ini > high_kemarin:
                 pct = (close_hari_ini - high_kemarin) / high_kemarin * 100
+                if pct < 0.5:
+                    continue
                 results.append({
                     "ticker":       ticker.replace(".JK", ""),
                     "harga":        close_hari_ini,
                     "high_kemarin": high_kemarin,
                     "breakout_pct": round(pct, 2),
                     "volume_b":     round(volume_hari_ini / 1e9, 1),
+                    "tgl_kemarin":  row_kemarin.name.strftime("%d/%m"),  # [DEBUG] log tanggal H-1
                 })
         except Exception as e:
             LOG.warning(f"breakout_scan | {ticker} | {e}")
@@ -2863,7 +2900,7 @@ def format_breakout_telegram(results: list, label: str = "") -> str:
     for i, r in enumerate(results, 1):
         lines.append(
             f"{i}. {r['ticker']}  +{r['breakout_pct']:.1f}%\n"
-            f"   Harga {r['harga']:,.0f}  |  H-1 {r['high_kemarin']:,.0f}"
+            f"   Harga {r['harga']:,.0f}  |  H-1({r.get('tgl_kemarin','?')}) {r['high_kemarin']:,.0f}"
             f"  |  Vol {r['volume_b']:.1f}B"
         )
     lines.append("\n⚠ Raw breakout — konfirmasi TF 15m sebelum entry")
