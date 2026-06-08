@@ -4940,19 +4940,20 @@ with tabs[7]:
             if _sc > 0:
                 _row = [_t]
                 for _s in _SCREENERS:
-                    _row.append("✓" if st.session_state.sbt_data.get(_sbt_key(_t, _s["key"]), False) else "")
+                    _row.append("YES" if st.session_state.sbt_data.get(_sbt_key(_t, _s["key"]), False) else "")
                 _row.append(_sc)
                 _row.append(st.session_state.sbt_notes.get(f"{st.session_state.sbt_date}_{_t}", ""))
                 _rows.append(_row)
         import io as _io
         _csv_buf = _io.StringIO()
+        _csv_buf.write("\ufeff")  # BOM — supaya Excel baca UTF-8 dengan benar
         for _r in _rows:
-            _csv_buf.write(",".join(str(x) for x in _r) + "\n")
+            _csv_buf.write(",".join(f'"{str(x).replace(chr(34), chr(34)*2)}"' for x in _r) + "\n")
         st.download_button(
             "⬇️ Export CSV",
             data=_csv_buf.getvalue(),
             file_name=f"stockbit_scan_{st.session_state.sbt_date}.csv",
-            mime="text/csv",
+            mime="text/csv;charset=utf-8",
             use_container_width=True,
         )
 
