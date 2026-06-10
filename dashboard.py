@@ -3015,6 +3015,9 @@ def format_breakdown_telegram(results: list, label: str = "") -> str:
         )
     lines.append("\n⚠ BREAKDOWN — HINDARI BUY. Konfirmasi TF 15m sebelum keputusan apapun.")
     return "\n".join(lines)
+
+
+def format_breakout_telegram(results: list, label: str = "") -> str:
     """Format hasil breakout scan jadi pesan Telegram."""
     now_str = datetime.now(WIB).strftime("%d %b %Y %H:%M WIB")
     tag = f" [{label}]" if label else ""
