@@ -126,10 +126,38 @@ _telegram_lock = threading.Lock()
 # ============================================================
 # VERSION HISTORY
 # ============================================================
-APP_VERSION  = "V5.8.0"
-APP_UPDATED  = "4 Jun 2026"
+APP_VERSION  = "V5.8.1"
+APP_UPDATED  = "10 Jun 2026"
 
 VERSION_HISTORY = [
+    {
+        "versi":   "V5.8.1",
+        "tanggal": "10 Jun 2026",
+        "tipe":    "Filter Calibration — Zero Signal Fix + Breakdown Scanner",
+        "ringkasan": "4 surgical fix untuk root cause zero signal saat bullish + tambah breakdown scanner (break low kemarin)",
+        "detail": [
+            "[FIX #1] RSI gate BULLISH: min 42 → 38",
+            "  Root cause: saham pre-breakout sering RSI 35-42 saat akumulasi",
+            "  42 terlalu tinggi untuk menangkap setup sebelum breakout terjadi",
+            "  38 = konsisten dengan SIDEWAYS, tidak ada alasan BULLISH lebih ketat",
+            "[FIX #2] Confluence minimum BULLISH: 4/6 → 3/6",
+            "  Root cause: ironi — saat market BULLISH sistem justur paling ketat",
+            "  Saat bullish bandar sering score 0 (volume sudah flat setelah spike kemarin)",
+            "  Dengan bandar=0: max 5 signal. Butuh 4 tapi borderline, terlalu sering gagal",
+            "  3/6 di semua regime = lebih konsisten dan tidak bias terhadap kondisi terbaik",
+            "[FIX #3] WEAK breakout guard dilonggarkan: OR(momentum==2, intraday>=2, ft==2) → akumulasi sufficient",
+            "  Root cause: intraday sering return 0 di awal sesi (data 5m belum cukup)",
+            "  Kondisi tiga-way OR semua jarang terpenuhi jam 09:05-09:30",
+            "  Fix: WEAK lolos jika bandar >= 1 OR momentum >= 1 (bukan strict 2)",
+            "  Ini cukup — liquidity trap dan fake_breakout sudah guard false signal",
+            "[FIX #4] get_bear_mode_params: conf_min BULLISH konsisten",
+            "  bear_mode_params tidak override conf_min BULLISH dengan benar sebelumnya",
+            "[NEW] scan_breakout_yesterday_low(): breakdown scanner — close < low H-1",
+            "  Terpisah dari scanner utama (bearish thesis, beda philosophy)",
+            "  Kirim Telegram dengan label BREAKDOWN untuk diferensiasi",
+            "  Ditampilkan di tab Breakout Scan sebagai section kedua",
+        ]
+    },
     {
         "versi":   "V5.8.0",
         "tanggal": "4 Jun 2026",
@@ -763,13 +791,15 @@ def calculate_rsi(df: pd.DataFrame, period: int = 14) -> float:
 def rsi_gate(df: pd.DataFrame, regime: str = "SIDEWAYS") -> tuple[bool, float]:
     rsi = calculate_rsi(df)
     if regime == "BULLISH":
-        rsi_min, rsi_max = 42, 78   # Lebih toleran overbought saat bullish
+        # [V5.8.1 FIX #1] Lower bound 42 → 38 untuk BULLISH
+        # Root cause: saham pre-breakout sering RSI 35-42 saat fase akumulasi akhir.
+        # Dengan min 42, sistem buta terhadap setup terbaik yang belum breakout.
+        # 38 = konsisten dengan SIDEWAYS. Tidak ada alasan BULLISH harus lebih ketat.
+        # Upper bound tetap 78 — toleran overbought saat trend kuat.
+        rsi_min, rsi_max = 38, 78
     elif regime == "DISTRIBUTION":
         rsi_min, rsi_max = 40, 68   # Lebih ketat saat distribusi
     else:                            # SIDEWAYS / VOLATILE / unknown
-        # [V5.5.3 FIX A] Lower bound 42 → 38 berdasarkan analisis CSV debug:
-        # 26 dari 28 saham gugur RSI di range 35-42 (bluechip syariah base recovery,
-        # bukan true oversold). Range 38-72 lebih realistic untuk pasar IDX.
         rsi_min, rsi_max = 38, 72
     return rsi_min <= rsi <= rsi_max, rsi
 
@@ -1196,7 +1226,12 @@ def get_bear_mode_params(regime: str) -> dict:
         }
     return {
         "rr_min":       1.8,
-        "conf_min":     4 if regime == "BULLISH" else 3,
+        # [V5.8.1 FIX #2] Confluence minimum: BULLISH 4 → 3 untuk semua non-bear regime
+        # Root cause: ironi — saat BULLISH (kondisi terbaik) sistem justru paling ketat (4/6).
+        # Saat bullish, bandar sering score 0 karena volume sudah "flat" setelah spike kemarin.
+        # Tanpa bandar: max reachable = 5/6. Butuh 4 tapi borderline, terlalu sering gagal.
+        # 3/6 untuk semua kondisi non-bear = konsisten dan tidak bias melawan kondisi terbaik.
+        "conf_min":     3,
         "rr_confluence": 1.8,
         "score_min":    70,
         "label":        "NORMAL",
@@ -1946,20 +1981,27 @@ def scan_core(market: dict, balance: float, top_n: int = 5,
                     "❌ Gugur di": reason})
                 continue
 
-            if breakout == "WEAK" and not (momentum == 2 or intraday >= 2 or ft == 2):
+            if breakout == "WEAK" and not (momentum >= 1 or bandar >= 1 or ft >= 1):
+                # [V5.8.1 FIX #3] Guard dilonggarkan: OR(momentum==2, intraday>=2, ft==2) → OR(momentum>=1, bandar>=1, ft>=1)
+                # Root cause #1: intraday_confirm() sering return 0 di awal sesi jam 09:05-09:30
+                #   karena data 5m belum cukup atau API call gagal → kondisi intraday>=2 hampir selalu False
+                # Root cause #2: kondisi ==2 atau >=2 terlalu ketat untuk early session
+                # Fix: cukup satu sinyal lemah (momentum OR bandar OR follow-through) yang confirm
+                # Safety: liquidity_trap dan fake_breakout sudah cukup memfilter false signal di atas
                 debug_log.append({"Ticker": tkr_clean, "Sector": sector,
                     "RSI": round(rsi_value, 1), "EMA_OK": "✅" if ema_ok else "❌",
                     "Bandar": bandar, "Breakout": breakout,
                     "Confluence": "-", "RR": round(rr, 1), "Score": "-",
-                    "❌ Gugur di": "WEAK breakout tanpa momentum/intraday/follow-through kuat"})
+                    "❌ Gugur di": "WEAK breakout tanpa konfirmasi apapun (momentum/bandar/ft semua 0)"})
                 continue
 
-            # Filter 4: Confluence — [K2] min adaptif per regime
+            # Filter 4: Confluence — min adaptif via get_bear_mode_params
             conf_count, conf_signals, conf_passed = confluence_check(
                 momentum, accum, bandar, breakout, rr, ema_ok, regime)
             if not conf_passed:
                 failed = [k for k, v in conf_signals.items() if not v]
-                min_c  = 4 if regime == "BULLISH" else 3
+                bm_c   = get_bear_mode_params(regime)
+                min_c  = bm_c["conf_min"]  # [V5.8.1] selalu 3 (non-bear) atau 2 (bear)
                 debug_log.append({"Ticker": tkr_clean, "Sector": sector,
                     "RSI": round(rsi_value, 1), "EMA_OK": "✅" if ema_ok else "❌",
                     "Bandar": bandar, "Breakout": breakout,
@@ -2880,7 +2922,99 @@ def scan_breakout_yesterday_high(universe: list) -> list:
     return results
 
 
-def format_breakout_telegram(results: list, label: str = "") -> str:
+def scan_breakout_yesterday_low(universe: list) -> list:
+    """
+    [V5.8.1 NEW] Breakdown scanner — close < low H-1.
+    Terpisah dari scanner utama karena bearish thesis berbeda philosophy.
+    Ini bukan sinyal beli — ini sinyal bahwa saham sedang DISTRIBUSI atau JUAL.
+    Berguna untuk: avoid buy, watchlist short opportunity (jika relevan), risk awareness.
+
+    Return list of dict sorted by breakdown_pct DESC (paling dalam breakdown duluan).
+    """
+    import pytz
+    results   = []
+    tz_wib    = pytz.timezone("Asia/Jakarta")
+    today_wib = datetime.now(tz_wib).date()
+
+    for ticker in universe:
+        try:
+            df = yf.download(
+                ticker, period="7d", interval="1d",
+                progress=False, auto_adjust=True,
+            )
+            if df is None or len(df) < 2:
+                continue
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+
+            df.index = pd.to_datetime(df.index).tz_localize(None).normalize()
+            df = df[df.index.date <= today_wib]
+            df = df.sort_index()
+
+            if len(df) < 2:
+                continue
+
+            last_date = df.index[-1].date()
+            if last_date != today_wib or len(df) < 2:
+                continue   # Candle hari ini belum ada, skip
+
+            row_today   = df.iloc[-1]
+            row_kemarin = df.iloc[-2]
+
+            low_kemarin     = float(row_kemarin["Low"])
+            close_hari_ini  = float(row_today["Close"])
+            volume_hari_ini = float(row_today["Volume"])
+
+            if low_kemarin <= 0 or volume_hari_ini <= 0:
+                continue
+
+            # Breakdown: close hari ini < low kemarin, min 0.5% untuk filter noise
+            if close_hari_ini < low_kemarin:
+                pct = (low_kemarin - close_hari_ini) / low_kemarin * 100
+                if pct < 0.5:
+                    continue
+                results.append({
+                    "ticker":       ticker.replace(".JK", ""),
+                    "harga":        close_hari_ini,
+                    "low_kemarin":  low_kemarin,
+                    "breakdown_pct": round(pct, 2),
+                    "volume_b":     round(volume_hari_ini / 1e9, 1),
+                    "tgl_kemarin":  row_kemarin.name.strftime("%d/%m"),
+                })
+        except Exception as e:
+            LOG.warning(f"breakdown_scan | {ticker} | {e}")
+            continue
+
+    results.sort(key=lambda x: x["breakdown_pct"], reverse=True)
+    LOG.info(f"breakdown_scan | scanned={len(universe)} breakdown={len(results)}")
+    return results
+
+
+def format_breakdown_telegram(results: list, label: str = "") -> str:
+    """Format hasil breakdown scan jadi pesan Telegram."""
+    now_str = datetime.now(WIB).strftime("%d %b %Y %H:%M WIB")
+    tag = f" [{label}]" if label else ""
+
+    if not results:
+        return (
+            f"📉 BREAKDOWN SCAN{tag} — {now_str}\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"Tidak ada saham ISSI breakdown low kemarin."
+        )
+
+    lines = [
+        f"📉 BREAKDOWN SCAN{tag} — {now_str}",
+        f"━━━━━━━━━━━━━━━━━━━━",
+        f"Close < Low H-1  |  {len(results)} saham\n",
+    ]
+    for i, r in enumerate(results, 1):
+        lines.append(
+            f"{i}. {r['ticker']}  -{r['breakdown_pct']:.1f}%\n"
+            f"   Harga {r['harga']:,.0f}  |  Low H-1({r.get('tgl_kemarin','?')}) {r['low_kemarin']:,.0f}"
+            f"  |  Vol {r['volume_b']:.1f}B"
+        )
+    lines.append("\n⚠ BREAKDOWN — HINDARI BUY. Konfirmasi TF 15m sebelum keputusan apapun.")
+    return "\n".join(lines)
     """Format hasil breakout scan jadi pesan Telegram."""
     now_str = datetime.now(WIB).strftime("%d %b %Y %H:%M WIB")
     tag = f" [{label}]" if label else ""
@@ -4884,6 +5018,90 @@ with tabs[6]:
             # Kirim ulang Telegram
             if st.button("📤 Kirim Ulang ke Telegram", key="bo_resend"):
                 msg = format_breakout_telegram(last_results, f"Resend {last_ts or ''}")
+                ok  = send_telegram(msg)
+                st.success("✅ Telegram terkirim") if ok else st.error("❌ Telegram gagal")
+
+    # ── BREAKDOWN SECTION — break low kemarin ────────────────
+    st.markdown("---")
+    st.markdown("## 📉 Breakdown Yesterday Low — HINDARI BUY")
+    st.caption(
+        "Saham yang close hari ini **di bawah Low daily kemarin**. "
+        "**Bukan sinyal beli.** Gunakan untuk: skip saham ini di ATS scanner, "
+        "risk awareness, atau konfirmasi exit posisi yang sudah ada."
+    )
+    st.warning(
+        "⚠️ **Breakdown = distribusi / selling pressure aktif.** "
+        "Jangan beli saham yang ada di daftar ini, meskipun ATS menampilkan sinyal."
+    )
+
+    col_bd1, col_bd2, _ = st.columns([1, 1, 3])
+    with col_bd1:
+        do_breakdown_scan = st.button(
+            "📉 Scan Breakdown Sekarang",
+            type="secondary", use_container_width=True,
+        )
+    with col_bd2:
+        send_tg_bd = st.checkbox("Kirim Telegram", value=False, key="bd_send_tg")
+
+    if do_breakdown_scan:
+        prog_bd = st.progress(0, text="🔍 Scanning breakdown ISSI...")
+        bd_results = scan_breakout_yesterday_low(ISSI_UNIVERSE)
+        prog_bd.progress(100, text=f"✅ Selesai — {len(bd_results)} breakdown ditemukan")
+
+        with _state_lock:
+            _breakout_last["bd_results"] = bd_results
+            _breakout_last["bd_ts"]      = datetime.now(WIB).strftime("%H:%M WIB")
+
+        if st.session_state.get("bd_send_tg", False):
+            msg = format_breakdown_telegram(bd_results, "Manual")
+            ok  = send_telegram(msg)
+            if ok:
+                st.success(f"✅ Telegram terkirim — {len(bd_results)} breakdown")
+            else:
+                st.warning("⚠️ Scan selesai tapi Telegram gagal")
+        time.sleep(0.3)
+        prog_bd.empty()
+
+    # Display hasil breakdown
+    last_bd_results = _breakout_last.get("bd_results", [])
+    last_bd_ts      = _breakout_last.get("bd_ts", None)
+
+    if not last_bd_results and not last_bd_ts:
+        st.info("Klik **Scan Breakdown Sekarang** untuk lihat saham yang breakdown low kemarin.")
+    else:
+        st.caption(
+            f"Scan terakhir: **{last_bd_ts or '-'}**  |  "
+            f"**{len(last_bd_results)} saham** breakdown low kemarin"
+        )
+        if last_bd_results:
+            bm1, bm2, bm3 = st.columns(3)
+            bm1.metric("Total Breakdown", len(last_bd_results))
+            bm2.metric("Breakdown Terdalam", f"{last_bd_results[0]['ticker']}  -{last_bd_results[0]['breakdown_pct']:.1f}%")
+            bm3.metric("Breakdown Terkecil", f"{last_bd_results[-1]['ticker']}  -{last_bd_results[-1]['breakdown_pct']:.1f}%")
+
+            st.markdown("---")
+            df_bd = pd.DataFrame(last_bd_results)
+            df_bd = df_bd.drop(columns=["tgl_kemarin"], errors="ignore")
+            df_bd.columns = ["Ticker", "Harga", "Low H-1", "Breakdown %", "Vol (B)"]
+            df_bd.index   = range(1, len(df_bd) + 1)
+
+            st.dataframe(
+                df_bd.style.format({
+                    "Harga":        "{:,.0f}",
+                    "Low H-1":      "{:,.0f}",
+                    "Breakdown %":  "{:.2f}%",
+                    "Vol (B)":      "{:.1f}B",
+                }),
+                use_container_width=True,
+            )
+            st.caption(
+                "⚠️ **HINDARI BUY semua ticker di daftar ini.** "
+                "Break low kemarin = tekanan jual masih aktif. "
+                "Tunggu minimal 2 hari konfirmasi sebelum reconsider."
+            )
+
+            if st.button("📤 Kirim Ulang ke Telegram", key="bd_resend"):
+                msg = format_breakdown_telegram(last_bd_results, f"Resend {last_bd_ts or ''}")
                 ok  = send_telegram(msg)
                 st.success("✅ Telegram terkirim") if ok else st.error("❌ Telegram gagal")
 
