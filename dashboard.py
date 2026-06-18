@@ -126,10 +126,29 @@ _telegram_lock = threading.Lock()
 # ============================================================
 # VERSION HISTORY
 # ============================================================
-APP_VERSION  = "V5.8.1"
-APP_UPDATED  = "10 Jun 2026"
+APP_VERSION  = "V5.8.2"
+APP_UPDATED  = "18 Jun 2026"
 
 VERSION_HISTORY = [
+    {
+        "versi":   "V5.8.2",
+        "tanggal": "18 Jun 2026",
+        "tipe":    "Bug Fix + Feature — Near-Low Alert",
+        "ringkasan": "Hapus 18 Jun dari IDX holiday (IDX buka normal) + Near-Low intraday alert ke Telegram",
+        "detail": [
+            "[FIX #1] Hapus date(2026, 6, 18) dari IDX_HOLIDAYS",
+            "  Root cause: 18 Juni dikategorikan cuti bersama Idul Adha tapi IDX confirmed buka",
+            "  Dampak: header menampilkan 'Libur Nasional', auto-scan skip hari ini",
+            "  Fix: hanya 17 Juni (Idul Adha) yang libur, 18 Juni buka normal",
+            "[FIX #2] Near-Low Early Warning di intraday_refresh_job (setiap 15 menit)",
+            "  Trigger: harga intraday dalam 0.5% dari Low kemarin (test support) atau di bawahnya (breakdown)",
+            "  Threshold 0.5%: lebih kecil = noise spread IDX; lebih besar = sudah terlambat",
+            "  Alert 1x per ticker per hari (pakai near_low_alerts state)",
+            "  Telegram format: harga saat ini, low kemarin, jarak %, status BREAKDOWN vs TEST SUPPORT",
+            "  Pesan: HINDARI BUY + evaluasi SL jika pegang posisi",
+            "  Silent fail — tidak crash intraday refresh jika daily data gagal fetch",
+        ]
+    },
     {
         "versi":   "V5.8.1",
         "tanggal": "10 Jun 2026",
@@ -470,7 +489,7 @@ IDX_HOLIDAYS: set[date] = {
     date(2026, 5, 20),  date(2026, 5, 22),
     date(2026, 5, 27),  date(2026, 5, 28),  # Idul Adha + cuti bersama
     date(2026, 6, 1),
-    date(2026, 6, 17),  date(2026, 6, 18),  # Idul Adha + cuti bersama
+    date(2026, 6, 17),                        # Idul Adha — 18 Juni IDX buka normal
     date(2026, 6, 26),  date(2026, 6, 27),  date(2026, 6, 28),  # Cuti bersama Idul Adha
     date(2026, 8, 17),  date(2026, 8, 18),
     date(2026, 9, 24),  date(2026, 12, 25),
@@ -2551,6 +2570,7 @@ def auto_scan_background():
 _spike_state: dict = {
     "last_prices":    {},   # {ticker: last_close} dari refresh sebelumnya
     "spike_alerts":   [],   # list ticker yang sudah dapat alert spike hari ini
+    "near_low_alerts": [],  # list ticker yang sudah dapat alert near-low hari ini
     "last_spike_date": None,
 }
 
@@ -2571,6 +2591,7 @@ def intraday_refresh_job():
     with _spike_lock:
         if _spike_state["last_spike_date"] != today:
             _spike_state["spike_alerts"]    = []
+            _spike_state["near_low_alerts"] = []
             _spike_state["last_spike_date"] = today
             _spike_state["last_prices"]     = {}
 
@@ -2629,8 +2650,91 @@ def intraday_refresh_job():
                         "vol_ratio":     round(vol_ratio, 1),
                     })
 
+                # ── NEAR-LOW EARLY WARNING ───────────────────
+                # Deteksi harga mendekati atau menyentuh Low kemarin.
+                # Logic: ambil low kemarin dari data 5m (bar paling awal hari ini
+                # tidak reliable — pakai daily data yang sudah ada di intraday
+                # context). Proxy: gunakan open_px sebagai worst-case low hari ini,
+                # bandingkan dengan low 5m bar pertama sebagai support level.
+                # CATATAN: data 5m hanya berisi hari ini, tidak ada "kemarin" di sini.
+                # Low kemarin harus diambil dari daily data — dilakukan di luar loop
+                # setelah semua ticker diproses (lihat near_low_check di bawah).
+
             except Exception:
                 continue
+
+        # ── NEAR-LOW BATCH CHECK ─────────────────────────────
+        # Ambil daily data untuk semua ticker yang intraday px tersedia
+        # Cek: current_px <= low_kemarin * 1.005 (dalam 0.5% dari low kemarin)
+        # Threshold 0.5% dipilih karena:
+        # - Terlalu kecil (0.1%) → false alarm terus, noise spread IDX
+        # - Terlalu besar (2%) → sudah terlambat, harga sudah breakdown
+        # - 0.5% = zona support test yang actionable, masih ada waktu untuk antisipasi
+        now_label_nl = datetime.now(WIB).strftime("%H:%M WIB")
+        try:
+            raw_daily_nl = yf.download(
+                tickers=ISSI_UNIVERSE,
+                period="5d", interval="1d",
+                group_by="ticker", progress=False, auto_adjust=True,
+            )
+            if raw_daily_nl is not None and not raw_daily_nl.empty:
+                for tkr_nl in ISSI_UNIVERSE:
+                    try:
+                        # Ambil current price dari snapshot yang baru di-update
+                        with _spike_lock:
+                            cur_px_nl = _spike_state["last_prices"].get(tkr_nl, 0)
+                            already_near_low = tkr_nl in _spike_state["near_low_alerts"]
+
+                        if cur_px_nl <= 0 or already_near_low:
+                            continue
+
+                        # Ambil low kemarin dari daily data
+                        if len(ISSI_UNIVERSE) > 1:
+                            df_d = raw_daily_nl[tkr_nl].dropna()
+                        else:
+                            df_d = raw_daily_nl.dropna()
+
+                        if df_d is None or len(df_d) < 2:
+                            continue
+
+                        low_yesterday = float(df_d["Low"].squeeze().iloc[-2])
+                        if low_yesterday <= 0:
+                            continue
+
+                        # Hitung jarak harga saat ini ke low kemarin
+                        dist_to_low_pct = (cur_px_nl - low_yesterday) / low_yesterday * 100
+
+                        # Trigger: harga dalam 0.5% di atas low kemarin, atau sudah di bawahnya
+                        # Artinya: -0.5% ≤ dist ≤ 0.5%
+                        if -0.5 <= dist_to_low_pct <= 0.5:
+                            tkr_clean_nl = tkr_nl.replace(".JK", "")
+                            sector_nl    = get_sector(tkr_nl)
+                            status_tag   = "🔴 BREAKDOWN" if dist_to_low_pct < 0 else "⚠️ TEST SUPPORT"
+
+                            msg_nl = (
+                                f"🚨 NEAR LOW ALERT — ATS V{APP_VERSION}\n"
+                                f"{'━'*30}\n"
+                                f"📌 {tkr_clean_nl}  |  {sector_nl}\n"
+                                f"⏰ {now_label_nl}  |  🔄 Intraday Refresh\n\n"
+                                f"{status_tag}\n"
+                                f"Harga saat ini : Rp {idr(cur_px_nl)}\n"
+                                f"Low kemarin    : Rp {idr(low_yesterday)}\n"
+                                f"Jarak          : {dist_to_low_pct:+.2f}%\n\n"
+                                f"{'🔴 Harga SUDAH BREAKDOWN — Low kemarin ditembus!' if dist_to_low_pct < 0 else '⚠️ Harga MENDEKATI Low kemarin — zona support kritis!'}\n"
+                                f"{'━'*30}\n"
+                                f"❌ HINDARI BUY saat ini\n"
+                                f"Jika pegang posisi — evaluasi SL kamu.\n"
+                                f"⚠️ No FOMO. Tunggu konfirmasi arah."
+                            )
+                            send_telegram(msg_nl)
+                            with _spike_lock:
+                                _spike_state["near_low_alerts"].append(tkr_nl)
+                            LOG.info(f"near_low_alert sent: {tkr_clean_nl} px={cur_px_nl} low_yst={low_yesterday} dist={dist_to_low_pct:+.2f}%")
+
+                    except Exception:
+                        continue
+        except Exception:
+            pass   # Silent fail — near-low check tidak boleh crash intraday refresh
 
         # Kalau ada spike candidate → trigger mini scan
         # [FIX #1] Baca regime dari state file (di-set oleh scan_core terakhir)
