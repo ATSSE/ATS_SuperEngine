@@ -4,7 +4,13 @@
 #
 # Referensi: OJK DES (Daftar Efek Syariah) Periode I 2026
 #            KEP-21/D.04/2026, ditetapkan 21 Mei 2026
-# Diupdate: 30 Mei 2026
+# Diupdate: 01 Juli 2026
+#
+# PERUBAHAN dari versi 30 Mei 2026:
+#   DITAMBAHKAN — terkonfirmasi ada di DES Periode I 2026 Lampiran I
+#   (Sektor A. Energi) tapi kelewat saat compile manual sebelumnya:
+#     RAJA  — Rukun Raharja (No. 52 dalam KEP-21/D.04/2026)
+#     RATU  — Raharja Energi Cepu (No. 53 dalam KEP-21/D.04/2026)
 #
 # PERUBAHAN dari versi sebelumnya (DES Periode II 2024):
 #   DIHAPUS — tidak ada di DES Periode I 2026:
@@ -23,6 +29,11 @@
 #     TBIG  — Tower Bersama (keluar dari DES)
 #     TBLA  — Tunas Baru Lampung (keluar dari DES)
 #     TOWR  — Sarana Menara Nusantara (keluar dari DES)
+#
+# CATATAN MAINTENANCE:
+#   DES terbit 2x/tahun (Periode I ~Mei, Periode II ~November).
+#   Cek ulang list ini tiap rilis DES baru dari OJK — jangan tunggu
+#   ticker "hilang" ketauan pas live trading.
 # =============================================================
 
 ISSI_UNIVERSE = [
@@ -39,6 +50,8 @@ ISSI_UNIVERSE = [
     "BUMI.JK",   # Bumi Resources — DES I 2026 ✓
     "INDY.JK",   # Indika Energy — DES I 2026 ✓
     "AKRA.JK",   # AKR Corporindo — DES I 2026 ✓
+    "RAJA.JK",   # Rukun Raharja — DES I 2026 ✓ (No. 52, ditambahkan 1 Jul 2026)
+    "RATU.JK",   # Raharja Energi Cepu — DES I 2026 ✓ (No. 53, ditambahkan 1 Jul 2026)
 
     # ================= MINING / BARANG BAKU =================
     "ANTM.JK",   # Aneka Tambang — DES I 2026 ✓
@@ -150,6 +163,7 @@ SECTOR_MAP = {
     "ADRO": "Energy", "ADMR": "Energy", "ITMG": "Energy", "PTBA": "Energy",
     "HRUM": "Energy", "PGAS": "Energy", "MEDC": "Energy", "ELSA": "Energy",
     "BUMI": "Energy", "INDY": "Energy", "AKRA": "Energy",
+    "RAJA": "Energy", "RATU": "Energy",
 
     # MINING / MATERIAL
     "ANTM": "Mining", "MDKA": "Mining", "TINS": "Mining",
