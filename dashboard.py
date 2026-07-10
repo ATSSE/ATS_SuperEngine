@@ -820,7 +820,6 @@ def calculate_performance_metrics(journal_df: pd.DataFrame) -> dict:
 # ============================================================
 @st.cache_resource
 def _load_persistent_state():
-    from engine.state_engine import load_state
     return load_state()
 
 if "state_loaded" not in st.session_state:
