@@ -4,7 +4,7 @@ BMW M4 Theme Edition
 ═══════════════════════════════════════════════════
 ENGINE TUNING (UI 100% PRESERVED):
 [C1] Simplified scoring — no double counting
-[C2] Weighted confluence — 70% threshold
+[C2] Weighted confluence — 70% threshold  
 [C3] Multi-timeframe breakout — 10d/20d + candle body
 [C4] Entry freshness + pullback detection
 [C5] Bandar threshold 1.8x → 2.5x
@@ -329,7 +329,7 @@ def bandar_detection(df: pd.DataFrame) -> int:
     if distribution: score -= 2
     return score
 
-# ── [C3] MULTI-TIMEFRAME BREAKOUT ──
+# ── [C3] MULTI-TIMEFRAME BREAKOUT ─
 def breakout_confirmation(df: pd.DataFrame) -> str:
     close = df["Close"].squeeze()
     high = df["High"].squeeze()
@@ -467,7 +467,7 @@ def calculate_score(prob: float, runner: float, quality: str, rr: float, liquidi
     total = prob_score + runner_score + quality_score + rr_base + liq_score + bandar_pts
     return round(min(100.0, total), 2)
 
-# ─── [C2] WEIGHTED CONFLUENCE (70% threshold) ───
+# ── [C2] WEIGHTED CONFLUENCE (70% threshold) ───
 def confluence_check(momentum: int, accum: int, bandar: int, breakout: str, rr: float, ema_ok: bool, regime: str = "SIDEWAYS") -> tuple:
     signals = {
         "Momentum_Strong": momentum >= 2,
@@ -556,7 +556,7 @@ def entry_system(row: pd.Series, thresholds: dict = None, cyber_params: dict = N
 # SESSION STATE INIT
 @st.cache_resource
 def _load_persistent_state():
-    return load_state()  # FIX: Langsung panggil, tidak import dari engine
+    return load_state()
 
 if "state_loaded" not in st.session_state:
     _state = _load_persistent_state()
@@ -580,7 +580,7 @@ if "intraday_info" not in st.session_state: st.session_state.intraday_info = {}
 
 TOP_N_RESULTS = 5
 
-# IMPORTS ENGINE (dengan fallback)
+# IMPORTS
 try:
     from engine.probability_engine import runner_probability
     from engine.runner_engine import runner_prediction
@@ -590,11 +590,9 @@ try:
     from engine.regime_engine import detect_market_regime
     from config.universe import ISSI_UNIVERSE, SECTOR_MAP, get_sector
 except ImportError:
-    # Fallback implementations jika module tidak ada
     ISSI_UNIVERSE = {"BBRI.JK", "BBNI.JK", "BMRI.JK", "TLKM.JK", "ASII.JK"}
     SECTOR_MAP = {"BBRI.JK": "Finance", "BBNI.JK": "Finance", "BMRI.JK": "Finance", "TLKM.JK": "Infrastructure", "ASII.JK": "Miscellaneous Industry"}
-    def get_sector(ticker): 
-        return SECTOR_MAP.get(ticker, "Unknown")
+    def get_sector(ticker): return SECTOR_MAP.get(ticker, "Unknown")
     def runner_probability(df): return 50
     def runner_prediction(df): return 50
     def pullback_quality(df): return "HEALTHY"
@@ -641,6 +639,318 @@ def load_market() -> dict:
             except Exception as e:
                 failed_tickers.append(s)
     return market
+
+# ── INJECT TODAY INTRADAY ──
+@st.cache_data(ttl=60)
+def _fetch_today_intraday_raw(tickers_tuple: tuple) -> dict:
+    result = {}
+    if not is_trading_day(): return result
+    try:
+        raw = yf.download(tickers=list(tickers_tuple), period="1d", interval="5m", group_by="ticker", progress=False, auto_adjust=True)
+        if raw is None or raw.empty: return result
+        for tkr in tickers_tuple:
+            try:
+                if len(tickers_tuple) == 1: df5 = raw.dropna()
+                else: df5 = raw[tkr].dropna()
+                if df5 is None or len(df5) < 3: continue
+                close5 = df5["Close"].squeeze()
+                high5 = df5["High"].squeeze()
+                low5 = df5["Low"].squeeze()
+                vol5 = df5["Volume"].squeeze()
+                open5 = df5["Open"].squeeze()
+                result[tkr] = {
+                    "Open": float(open5.iloc[0]), "High": float(high5.max()),
+                    "Low": float(low5.min()), "Close": float(close5.iloc[-1]),
+                    "Volume": float(vol5.sum()), "n_bars": len(df5),
+                    "last_time": str(close5.index[-1]),
+                }
+            except Exception: continue
+    except Exception: pass
+    return result
+
+def inject_today_intraday(market: dict) -> tuple:
+    if not is_market_open() and not is_trading_day(): return market, {}
+    tickers_tuple = tuple(sorted(market.keys()))
+    today_data = _fetch_today_intraday_raw(tickers_tuple)
+    if not today_data: return market, {}
+    updated_market = {}
+    intraday_info = {}
+    today_date = datetime.now(WIB).date()
+    for ticker, df in market.items():
+        if ticker not in today_data:
+            updated_market[ticker] = df
+            continue
+        td = today_data[ticker]
+        try:
+            last_date = pd.to_datetime(df.index[-1]).date()
+            new_row = pd.DataFrame({
+                "Open": [td["Open"]], "High": [td["High"]],
+                "Low": [td["Low"]], "Close": [td["Close"]],
+                "Volume": [td["Volume"]],
+            }, index=[pd.Timestamp(today_date)])
+            if last_date == today_date:
+                df_updated = df.copy()
+                df_updated.iloc[-1] = new_row.iloc[0]
+                intraday_info[ticker] = {"status": "updated", "close": td["Close"]}
+            else:
+                df_updated = pd.concat([df, new_row])
+                intraday_info[ticker] = {"status": "appended", "close": td["Close"]}
+            updated_market[ticker] = df_updated
+        except Exception:
+            updated_market[ticker] = df
+    return updated_market, intraday_info
+
+# HEATMAP
+def build_heatmap_data(market: dict) -> pd.DataFrame:
+    rows = []
+    for ticker, df in market.items():
+        if ticker not in ISSI_UNIVERSE: continue
+        try:
+            close = df["Close"].squeeze()
+            volume = df["Volume"].squeeze()
+            tkr_clean = ticker.replace(".JK", "")
+            sector = get_sector(ticker)
+            chg = daily_change_pct(df)
+            last_price = float(close.iloc[-1])
+            avg_vol = float(volume.tail(20).mean())
+            size_val = max((last_price * avg_vol * 100) / 1_000_000_000, 0.1)
+            label = f"{tkr_clean}  {chg:+.2f}%"
+            rows.append({
+                "Sektor": sector, "Ticker": tkr_clean, "Label": label,
+                "Change%": round(chg, 2), "Size": round(size_val, 4),
+            })
+        except Exception: continue
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+# TECHNICAL CONTEXT
+def build_technical_context(df: pd.DataFrame) -> dict:
+    try:
+        close = df["Close"].squeeze()
+        high = df["High"].squeeze()
+        low = df["Low"].squeeze()
+        volume = df["Volume"].squeeze()
+        last = float(close.iloc[-1])
+        ema20 = float(close.ewm(span=20, adjust=False).mean().iloc[-1])
+        ema50 = float(close.ewm(span=50, adjust=False).mean().iloc[-1])
+        ema12 = close.ewm(span=12, adjust=False).mean()
+        ema26 = close.ewm(span=26, adjust=False).mean()
+        macd_h = float((ema12 - ema26 - (ema12 - ema26).ewm(span=9, adjust=False).mean()).iloc[-1])
+        bb_mid = float(close.tail(20).mean())
+        bb_std = float(close.tail(20).std())
+        bb_pos = (last - bb_mid) / (2 * bb_std) * 100 if bb_std > 0 else 0
+        rsi = calculate_rsi(df)
+        avg_vol = float(volume.tail(20).mean())
+        vol_ratio = float(volume.iloc[-1]) / avg_vol if avg_vol > 0 else 1.0
+        resistance = float(high.tail(20).max())
+        support = float(low.tail(20).min())
+        dist_to_r = (resistance - last) / last * 100 if last > 0 else 0
+        alignment = sum([last > ema20, last > ema50, ema20 > ema50, macd_h > 0, 42 <= rsi <= 72, vol_ratio >= 1.0])
+        return {
+            "rsi": round(rsi, 1), "macd_dir": "↑ Bullish" if macd_h > 0 else "↓ Bearish",
+            "bb_zone": "Atas" if bb_pos > 33 else ("Bawah" if bb_pos < -33 else "Tengah"),
+            "vol_ratio": round(vol_ratio, 1), "ema_trend": "Golden ✅" if ema20 > ema50 else "Death ⚠️",
+            "alignment": alignment, "resistance": resistance, "support": support,
+            "dist_to_r": round(dist_to_r, 1), "ok": True,
+        }
+    except Exception: return {"ok": False}
+
+def format_telegram_signal(row: dict, regime: str, market: dict) -> str:
+    tkr = row.get("Ticker", "-")
+    action = row.get("Action", "-")
+    is_now = "NOW" in action
+    ticker_jk = tkr + ".JK"
+    tech = {}
+    if ticker_jk in market:
+        tech = build_technical_context(market[ticker_jk])
+    header = "🔥 EXECUTE NOW" if is_now else "✅ EXECUTE"
+    base = (
+        f"{header} — ATS V{APP_VERSION}\n"
+        f"{'━'*30}\n"
+        f"📌 {tkr}  |  {row.get('Sector', '-')}\n"
+        f"⏰ {datetime.now(WIB).strftime('%H:%M WIB')}  |  Regime: {regime}\n\n"
+        f"📊 ATS SIGNAL\n"
+        f"Score      : {row.get('Score', 0):.1f}/100\n"
+        f"RR         : {row.get('RR', 0):.1f}x\n"
+        f"Confluence : {row.get('Confluence', 0)}/6\n"
+        f"Change     : {row.get('Change%', 0):+.2f}%\n"
+        f"Breakout   : {row.get('Breakout', '-')}\n\n"
+        f"💰 LEVEL TRADING\n"
+        f"Entry  : {row.get('Entry', '-')}\n"
+        f"SL     : {row.get('SL', '-')}\n"
+        f"Target : {row.get('Target', '-')}\n"
+        f"Lot    : {row.get('Lot', '-')}\n"
+    )
+    if tech.get("ok"):
+        alignment_bar = "█" * tech["alignment"] + "░" * (6 - tech["alignment"])
+        tech_section = (
+            f"\n📈 TEKNIKAL CONTEXT\n"
+            f"RSI        : {tech['rsi']} {'⚠️OB' if tech['rsi'] > 70 else ('⚠️OS' if tech['rsi'] < 30 else '✅')}\n"
+            f"MACD       : {tech['macd_dir']}\n"
+            f"Bollinger  : Zona {tech['bb_zone']}\n"
+            f"EMA Trend  : {tech['ema_trend']}\n"
+            f"Volume     : {tech['vol_ratio']:.1f}x rata-rata\n"
+            f"Alignment  : [{alignment_bar}] {tech['alignment']}/6\n"
+            f"Jarak ke R : {tech['dist_to_r']:.1f}%\n"
+        )
+    else:
+        tech_section = ""
+    footer = (
+        f"\n{'━'*30}\n"
+        f"{'⚡ LANGSUNG EKSEKUSI' if is_now else '✅ KONFIRMASI CHART DULU'}\n"
+        f"️ Pasang SL. No FOMO.\n"
+    )
+    return base + tech_section + footer
+
+# SCAN CORE
+def scan_core(market: dict, balance: float, top_n: int = 5, show_progress: bool = False) -> tuple:
+    regime = detect_market_regime(market)
+    sector_power = sector_momentum(market, SECTOR_MAP)
+    sector_df = pd.DataFrame([{"Sector": k, "Strength": round(v, 2)} for k, v in sector_power.items()]).sort_values("Strength", ascending=False)
+    ada_weights = get_adaptive_weights(regime)
+    sector_strength_map = {row["Sector"]: row["Strength"] for _, row in sector_df.iterrows()}
+    candidates = []
+    debug_log = []
+    total = len([t for t in ISSI_UNIVERSE if t in market])
+    count = 0
+    prog = st.progress(0, text="Scanning...") if show_progress else None
+    for ticker, df in market.items():
+        if ticker not in ISSI_UNIVERSE: continue
+        count += 1
+        if prog: prog.progress(count / max(total, 1), text=f"Scanning {ticker}...")
+        try:
+            sector = get_sector(ticker)
+            tkr_clean = ticker.replace(".JK", "")
+            sec_strength = sector_strength_map.get(sector, 0.0)
+            if sec_strength < -0.05:
+                debug_log.append({"Ticker": tkr_clean, "Sector": sector, "❌ Gugur di": f"Sektor sangat lemah ({sec_strength:.2f})"})
+                continue
+            sector_score_adj = 3.0 if sec_strength > 0.03 else (0.0 if sec_strength > 0 else -5.0)
+            rsi_ok, rsi_value = rsi_gate(df, regime)
+            if not rsi_ok:
+                debug_log.append({"Ticker": tkr_clean, "Sector": sector, "RSI": round(rsi_value, 1), "❌ Gugur di": f"RSI out of range ({rsi_value:.1f})"})
+                continue
+            ema_ok, last_price, ema_val = ema_trend_filter(df)
+            atr = calculate_atr(df)
+            entry = last_price
+            sl = calculate_sl_atr(entry, atr)
+            target = find_target(df, entry)
+            rr = risk_reward(entry, sl, target)
+            lot = position_sizing(balance, 0.02, entry, sl, atr)
+            momentum = momentum_confirmation(df)
+            accum = accumulation_phase(df)
+            bandar = bandar_detection(df)
+            breakout = breakout_confirmation(df)
+            ft = follow_through(df)
+            chg_pct = daily_change_pct(df)
+            
+            # [C4] Entry freshness dengan pullback detection
+            freshness_limit = (
+                9.0 if breakout == "VALID" and (momentum == 2 or ft == 2) else
+                7.0 if breakout == "VALID" else
+                6.0 if breakout == "WEAK" and (momentum == 2 or ft == 2) else
+                5.0 if breakout == "WEAK" else
+                4.5
+            )
+            is_pullback = chg_pct < 0
+            if chg_pct > freshness_limit and not is_pullback:
+                debug_log.append({"Ticker": tkr_clean, "Sector": sector, "❌ Gugur di": f"Entry expired: {chg_pct:.1f}% > {freshness_limit:.1f}%"})
+                continue
+            if breakout == "WAIT":
+                debug_log.append({"Ticker": tkr_clean, "Sector": sector, "❌ Gugur di": "Breakout WAIT"})
+                continue
+            intraday = intraday_confirm(ticker)
+            prob = runner_probability(df)
+            runner = runner_prediction(df)
+            quality = pullback_quality(df)
+            liq_raw = liquidity_trap(df)
+            fake_bo = fake_breakout(df)
+            is_liq_trap = is_trap_signal(liq_raw)
+            is_fake_bo = is_trap_signal(fake_bo)
+            liq_str = "🔴 TRAP" if is_liq_trap else "🟢 OK"
+            if is_liq_trap or is_fake_bo:
+                debug_log.append({"Ticker": tkr_clean, "Sector": sector, "❌ Gugur di": "Liquidity trap" if is_liq_trap else "Fake breakout"})
+                continue
+            conf_score, conf_signals, conf_passed = confluence_check(momentum, accum, bandar, breakout, rr, ema_ok, regime)
+            if not conf_passed:
+                failed = [k for k, v in conf_signals.items() if not v]
+                debug_log.append({"Ticker": tkr_clean, "Sector": sector, "Confluence": f"{conf_score:.1f}/7.5", "❌ Gugur di": f"Confluence {conf_score:.1f}/7.5 < 5.25 (gagal: {', '.join(failed)})"})
+                continue
+            if rr < 1.8:
+                debug_log.append({"Ticker": tkr_clean, "Sector": sector, "RR": round(rr, 1), "❌ Gugur di": f"RR terlalu rendah ({rr:.1f})"})
+                continue
+            atr_pct = (atr / entry * 100) if entry > 0 else 0
+            close_series = df["Close"].squeeze()
+            daily_changes = close_series.pct_change().tail(20).abs() * 100
+            avg_daily_move = float(daily_changes.mean())
+            if atr_pct < 2.5 or avg_daily_move < 1.5:
+                debug_log.append({"Ticker": tkr_clean, "Sector": sector, "ATR%": round(atr_pct, 2), "AvgDaily": round(avg_daily_move, 2), "❌ Gugur di": f"Slow mover (ATR {atr_pct:.2f}%, avg {avg_daily_move:.2f}%)"})
+                continue
+            
+            # [C1] Simplified scoring
+            base_score = calculate_score(prob, runner, quality, rr, liq_str, bandar, regime)
+            momentum_bonus = momentum * 1.0
+            accum_bonus = accum * 1.2
+            ft_bonus = ft * 0.8
+            intra_bonus = intraday * 0.6
+            score = base_score + momentum_bonus + accum_bonus + ft_bonus + intra_bonus + sector_score_adj
+            score = min(100.0, max(0.0, score))
+            
+            log_scan_event(ticker=tkr_clean, status="LOLOS", score=score, regime=regime, rr=rr, conf=int(conf_score), extra={"sector": sector, "breakout": breakout, "bandar": bandar})
+            debug_log.append({"Ticker": tkr_clean, "Sector": sector, "RSI": round(rsi_value, 1), "Breakout": breakout, "Confluence": f"{conf_score:.1f}/7.5", "RR": round(rr, 1), "Score": round(score, 1), "❌ Gugur di": f"✅ LOLOS"})
+            candidates.append({
+                "BUY": False, "Ticker": tkr_clean, "Sector": sector, "Action": "", "Score": round(score, 2),
+                "Probability": int(prob), "RunnerScore": int(runner), "PullbackQuality": quality, "Liquidity": liq_str,
+                "RSI": round(rsi_value, 1), "RR": round(rr, 1), "Change%": chg_pct, "ATR%": round(atr_pct, 2),
+                "Momentum": momentum, "Accumulation": accum, "BandarScore": bandar, "Breakout": breakout,
+                "FT": ft, "INTRA": intraday, "Confluence": round(conf_score, 1),
+                "Entry": idr(entry), "SL": idr(sl), "Target": idr(target), "Lot": lot, "ATR": round(atr, 0), "EMA50": round(ema_val, 0),
+            })
+        except Exception as e:
+            debug_log.append({"Ticker": ticker.replace(".JK", ""), "Sector": get_sector(ticker), "❌ Gugur di": f"⚠️ Exception: {str(e)[:60]}"})
+    if prog: prog.empty()
+    if not candidates:
+        return pd.DataFrame(), pd.DataFrame(debug_log), {}, regime, sector_df
+    thresholds = get_dynamic_thresholds([c["Score"] for c in candidates])
+    cyber_params = st.session_state.cybernetic_params
+    scan_df = pd.DataFrame(candidates).sort_values("Score", ascending=False)
+    scan_df["Action"] = scan_df.apply(lambda r: entry_system(r, thresholds=thresholds, cyber_params=cyber_params), axis=1)
+    scan_df = scan_df[scan_df["Action"] != "SKIP"].head(top_n)
+    return scan_df, pd.DataFrame(debug_log), thresholds, regime, sector_df
+
+def run_scanner():
+    st.session_state.scan_result = None
+    st.session_state.sector_table = None
+    st.session_state.dynamic_thresholds = None
+    with st.spinner("Scanning..."):
+        try:
+            market = load_market()
+            balance = st.session_state.get("balance", 800000)
+            scan_df, debug_df, thresholds, regime, sector_df = scan_core(market, balance, show_progress=True)
+            st.session_state.scan_result = scan_df
+            st.session_state.debug_log = debug_df
+            st.session_state.dynamic_thresholds = thresholds
+            st.session_state.last_regime = regime
+            st.session_state.sector_table = sector_df
+            st.session_state.heatmap_data = build_heatmap_data(market)
+        except Exception as e:
+            st.error(f"❌ Scanner Crash: {e}")
+            return
+    if scan_df is not None and not scan_df.empty:
+        now_ts = time.time()
+        sent = []
+        for _, row in scan_df.iterrows():
+            tkr = row["Ticker"]
+            action = row.get("Action", "")
+            if action not in ("EXECUTE NOW", "EXECUTE"): continue
+            lock_time = 600 if "NOW" in action else 1800
+            if now_ts - st.session_state.signal_lock.get(tkr, 0) < lock_time: continue
+            msg = format_telegram_signal(row, regime, market)
+            if send_telegram(msg):
+                st.session_state.signal_lock[tkr] = now_ts
+                sent.append(tkr)
+        if sent:
+            st.success(f" Alert Telegram: {', '.join(sent)}")
+            save_state()
 
 # UI SETUP
 st.set_page_config(layout="wide", page_title="ATS SuperEngine V6.0", page_icon="📊")
@@ -716,7 +1026,7 @@ header_html = f'''
 st.markdown(header_html, unsafe_allow_html=True)
 
 # TABS (SEMUA 9 TAB UTUH)
-tabs = st.tabs(["📖 HOW TO USE", "📊 TRADING DESK", "💼 ACCOUNT", "📋 REPORT", "🕌 ISSI CHECK", "🎯 BANDAR HUNTER", "🚀 BREAKOUT SCAN", "🗂️ STOCKBIT TRACKER", " WISDOM"])
+tabs = st.tabs(["📖 HOW TO USE", "📊 TRADING DESK", "💼 ACCOUNT", "📋 REPORT", "🕌 ISSI CHECK", "🎯 BANDAR HUNTER", "🚀 BREAKOUT SCAN", "️ STOCKBIT TRACKER", "📚 WISDOM"])
 
 # TAB 0: HOW TO USE
 with tabs[0]:
@@ -724,7 +1034,7 @@ with tabs[0]:
     st.info("ATS (Automated Trading Scanner) memindai saham syariah ISSI secara otomatis dan mengirim notifikasi ke Telegram.")
     st.markdown("### ⏰ Jadwal Auto-Scan")
     st.markdown("**09:05** | **09:30** | **11:30** | **13:35** | **15:00** WIB")
-    st.markdown("###  Arti Sinyal")
+    st.markdown("### 📊 Arti Sinyal")
     c1, c2, c3 = st.columns(3)
     c1.error("🔥 **EXECUTE NOW** - Sinyal terkuat")
     c2.warning("✅ **EXECUTE** - Sinyal kuat")
@@ -733,25 +1043,9 @@ with tabs[0]:
 # TAB 1: TRADING DESK
 with tabs[1]:
     if st.button("🚀 RUN ATS SCANNER", type="primary", use_container_width=True):
-        with st.spinner("Scanning..."):
-            try:
-                market = load_market()
-                balance = st.session_state.get("balance", 800000)
-                # Placeholder result untuk demo
-                st.session_state.scan_result = pd.DataFrame({
-                    "Ticker": ["TEST"], 
-                    "Score": [75], 
-                    "RR": [2.0], 
-                    "Entry": ["1000"], 
-                    "SL": ["950"], 
-                    "Target": ["1100"], 
-                    "Action": ["READY"]
-                })
-                st.success("✅ Scan selesai!")
-            except Exception as e:
-                st.error(f"❌ Error: {e}")
-    
+        run_scanner()
     if st.session_state.scan_result is not None and not st.session_state.scan_result.empty:
+        st.success(f"✅ {len(st.session_state.scan_result)} kandidat ditemukan")
         st.dataframe(st.session_state.scan_result, use_container_width=True)
     elif st.session_state.scan_result is not None:
         st.warning("️ Tidak ada kandidat hari ini")
@@ -778,15 +1072,10 @@ with tabs[3]:
     if st.session_state.journal.empty:
         st.session_state.journal = pd.DataFrame(columns=JOURNAL_COLS)
     edited_journal = st.data_editor(st.session_state.journal, num_rows="dynamic", use_container_width=True, hide_index=True)
-    if st.button("💾 Save Journal"):
+    if st.button(" Save Journal"):
         st.session_state.journal = edited_journal.reset_index(drop=True)
         st.session_state.journal.to_csv(JOURNAL_FILE, index=False)
         st.success("✅ Journal tersimpan")
-    
-    # Export CSV
-    if not st.session_state.journal.empty:
-        csv = st.session_state.journal.to_csv(index=False).encode('utf-8')
-        st.download_button("📥 Export Journal ke CSV", data=csv, file_name=f"journal_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv", use_container_width=True)
 
 # TAB 4: ISSI CHECK
 with tabs[4]:
