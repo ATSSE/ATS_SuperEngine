@@ -126,10 +126,36 @@ _telegram_lock = threading.Lock()
 # ============================================================
 # VERSION HISTORY
 # ============================================================
-APP_VERSION  = "V5.8.2"
-APP_UPDATED  = "18 Jun 2026"
+APP_VERSION  = "V6.0.0"
+APP_UPDATED  = "10 Jul 2026"
 
 VERSION_HISTORY = [
+    {
+        "versi":   "V6.0.0",
+        "tanggal": "10 Jul 2026",
+        "tipe":    "Major Tuning — 9 Komponen Engine (V5.8.2 → V6.0.0)",
+        "ringkasan": "Rewrite total logika analisa: scoring 5 komponen, weighted confluence, multi-TF breakout, bandar 2.5x + price action, dynamic freshness, RSI divergence, dynamic signal lock, intraday retry, leading regime detection",
+        "detail": [
+            "[1] SCORING: stack bonus (momentum/accum/ft/intraday/extra) DIHAPUS — double counting",
+            "    5 komponen: Trend(prob+runner), Bandar, Breakout, Momentum(mom+ft), RR. Bobot regime-adaptif, sum=1.0",
+            "    Liquidity DIHAPUS dari score (konstan utk semua survivor = inflasi murni, zero discrimination)",
+            "    Max score dijamin <= 100 by construction, bukan by cap",
+            "[2] CONFLUENCE: count sederhana → weighted. Bandar 2x, Breakout 2x (WEAK=1x), Momentum/RR/Accum/Uptrend 1x",
+            "    Max 8 poin. Pass: >= 70% (5.6/8) normal, >= 55% (4.4/8) bear mode",
+            "[3] BREAKOUT: multi-TF 10d/20d + candle body quality → STRONG/VALID/WEAK/WAIT",
+            "    STRONG: tembus 20d high, vol>1.5x, body>=50% range, close upper half",
+            "    VALID: tembus 10d high, vol>1.3x, close bukan di ekor bawah",
+            "[4] BANDAR: spike threshold 1.8x → 2.5x + WAJIB price action confirmation",
+            "    Spike tanpa konfirmasi harga (close merah/ekor bawah) = 0 poin, bukan +2",
+            "[5] FRESHNESS: hard cap statis → dynamic limit (ATR-scaled) + pullback detection",
+            "    Harga turun >=1.5% dari high hari ini = pullback sehat → limit +2%",
+            "[6] RSI GATE: range adaptif + bearish divergence detection (RSI>65, price HH vs RSI LH → reject)",
+            "[7] SIGNAL LOCK: fixed 600s → dynamic. EXECUTE NOW=60min, EXECUTE=20min + upgrade bypass",
+            "    (EXECUTE → EXECUTE NOW menembus lock, downgrade tidak)",
+            "[8] INTRADAY: retry 2x + fallback interval 15m saat 5m gagal — no more silent fail",
+            "[9] REGIME: reaktif (breadth only) → leading (breadth + new high/low 20d + %above EMA20)",
+        ]
+    },
     {
         "versi":   "V5.8.2",
         "tanggal": "18 Jun 2026",
@@ -759,6 +785,7 @@ def save_state():
         data = {
             "cybernetic_params": cp,
             "signal_lock":       sig_lock,
+            "signal_action":     st.session_state.get("signal_action", {}),
             "balance":           st.session_state.balance,
             "last_regime":       st.session_state.get("last_regime", "SIDEWAYS"),
         }
@@ -796,15 +823,40 @@ def idr(x) -> str:
 # ============================================================
 # RSI — Wilder's Smoothing
 # ============================================================
-def calculate_rsi(df: pd.DataFrame, period: int = 14) -> float:
+def calculate_rsi_series(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    """[V6.0.0] Full RSI series — dibutuhkan untuk divergence detection."""
     close    = df["Close"].squeeze()
     delta    = close.diff()
     avg_gain = delta.clip(lower=0).ewm(alpha=1/period, adjust=False).mean()
     avg_loss = (-delta).clip(lower=0).ewm(alpha=1/period, adjust=False).mean()
     rs       = avg_gain / avg_loss.replace(0, 1e-10)
-    rsi      = 100 - (100 / (1 + rs))
-    val      = float(rsi.iloc[-1])
+    return 100 - (100 / (1 + rs))
+
+def calculate_rsi(df: pd.DataFrame, period: int = 14) -> float:
+    rsi = calculate_rsi_series(df, period)
+    val = float(rsi.iloc[-1])
     return val if not np.isnan(val) else 50.0
+
+def bearish_divergence(df: pd.DataFrame, lookback: int = 14) -> bool:
+    """
+    [V6.0.0 #6] Bearish divergence: harga bikin higher high, RSI bikin lower high.
+    Hanya relevan saat RSI sudah tinggi (>65) — di zona rendah divergence tidak
+    predictive dan hanya menambah false reject.
+    Window: bandingkan 5 candle terakhir vs 9 candle sebelumnya (total 14).
+    """
+    try:
+        if len(df) < lookback + 2:
+            return False
+        rsi_s  = calculate_rsi_series(df).tail(lookback)
+        high_s = df["High"].squeeze().tail(lookback)
+        if float(rsi_s.iloc[-1]) <= 65:
+            return False   # gate hanya aktif di zona overbought
+        recent_ph, prior_ph = float(high_s.tail(5).max()), float(high_s.head(lookback - 5).max())
+        recent_rh, prior_rh = float(rsi_s.tail(5).max()),  float(rsi_s.head(lookback - 5).max())
+        # Price higher high + RSI lower high (margin 1.0 poin RSI utk hindari noise)
+        return recent_ph > prior_ph and recent_rh < prior_rh - 1.0
+    except Exception:
+        return False   # data error → jangan blokir, filter lain tetap jalan
 
 # [K1] RSI gate adaptif per regime — dipanggil dengan regime saat ini
 def rsi_gate(df: pd.DataFrame, regime: str = "SIDEWAYS") -> tuple[bool, float]:
@@ -820,7 +872,12 @@ def rsi_gate(df: pd.DataFrame, regime: str = "SIDEWAYS") -> tuple[bool, float]:
         rsi_min, rsi_max = 40, 68   # Lebih ketat saat distribusi
     else:                            # SIDEWAYS / VOLATILE / unknown
         rsi_min, rsi_max = 38, 72
-    return rsi_min <= rsi <= rsi_max, rsi
+    if not (rsi_min <= rsi <= rsi_max):
+        return False, rsi
+    # [V6.0.0 #6] Reject bearish divergence — entry tepat sebelum reversal
+    if bearish_divergence(df):
+        return False, rsi
+    return True, rsi
 
 # ============================================================
 # EMA
@@ -955,8 +1012,18 @@ def accumulation_phase(df: pd.DataFrame) -> int:
 def bandar_detection(df: pd.DataFrame) -> int:
     close        = df["Close"].squeeze()
     volume       = df["Volume"].squeeze()
+    high         = df["High"].squeeze()
+    low          = df["Low"].squeeze()
     avg_vol      = float(volume.tail(20).mean())
-    spike        = float(volume.iloc[-1]) > avg_vol * 1.8   # [K3] 2.0x → 1.8x
+    # [V6.0.0 #4] Spike threshold 1.8x → 2.5x + WAJIB price action confirmation.
+    # Spike volume di harga turun / close di ekor bawah = distribusi/churning,
+    # bukan akumulasi (ADRO lesson). Tanpa konfirmasi harga → 0 poin.
+    last_c, last_h, last_l = float(close.iloc[-1]), float(high.iloc[-1]), float(low.iloc[-1])
+    day_range   = max(last_h - last_l, 1e-9)
+    close_pos   = (last_c - last_l) / day_range          # posisi close dlm range hari ini
+    up_day      = last_c > float(close.iloc[-2])
+    price_confirm = up_day and close_pos >= 0.5          # hijau + close di paruh atas
+    spike        = (float(volume.iloc[-1]) > avg_vol * 2.5) and price_confirm
     price_trend  = float(close.tail(5).mean()) > float(close.tail(10).mean())
     vol_stable   = float(volume.tail(5).mean()) >= avg_vol * 0.9
     accumulation = price_trend and vol_stable
@@ -970,20 +1037,41 @@ def bandar_detection(df: pd.DataFrame) -> int:
     return score
 
 def breakout_confirmation(df: pd.DataFrame) -> str:
+    """
+    [V6.0.0 #3] Multi-timeframe (10d/20d) + candle body quality.
+    Hierarchy: STRONG > VALID > WEAK > WAIT.
+    - STRONG : tembus 20d high, volume >1.5x, body >=50% range, close paruh atas
+               → breakout struktural, bukan fakeout intraday
+    - VALID  : tembus 10d high, volume >1.3x, close TIDAK di ekor bawah (>=40% range)
+               → filter bull trap: spike lalu ditinggal (long upper wick) tidak lolos VALID
+    - WEAK   : near breakout (>=99% dari 10d high) + hijau + volume >=0.6x
+    - WAIT   : lainnya
+    """
     close       = df["Close"].squeeze()
     high        = df["High"].squeeze()
+    low         = df["Low"].squeeze()
+    opn         = df["Open"].squeeze()
     volume      = df["Volume"].squeeze()
     last        = float(close.iloc[-1])
     prev        = float(close.iloc[-2])
-    recent_high = float(high.iloc[:-1].tail(10).max())
+    high_10     = float(high.iloc[:-1].tail(10).max())
+    high_20     = float(high.iloc[:-1].tail(20).max())
     avg_vol     = float(volume.tail(20).mean())
     vol_ratio   = float(volume.iloc[-1]) / avg_vol if avg_vol > 0 else 1.0
     change_pct  = (last - prev) / prev * 100 if prev > 0 else 0
-    breakout    = last >= recent_high
-    near_breakout = last >= recent_high * 0.99 and change_pct > 0
-    if breakout and vol_ratio > 1.3:
+
+    # Candle body quality hari ini
+    d_high, d_low, d_open = float(high.iloc[-1]), float(low.iloc[-1]), float(opn.iloc[-1])
+    day_range  = max(d_high - d_low, 1e-9)
+    body_ratio = abs(last - d_open) / day_range      # dominasi body vs wick
+    close_pos  = (last - d_low) / day_range          # posisi close dlm range
+
+    if (last >= high_20 and vol_ratio > 1.5
+            and body_ratio >= 0.5 and close_pos >= 0.5 and last > d_open):
+        return "STRONG"
+    if last >= high_10 and vol_ratio > 1.3 and close_pos >= 0.4:
         return "VALID"
-    if near_breakout and vol_ratio >= 0.6:   # [V5.6.3] 0.8 → 0.6: akumulasi diam-diam valid
+    if last >= high_10 * 0.99 and change_pct > 0 and vol_ratio >= 0.6:
         return "WEAK"
     return "WAIT"
 
@@ -999,8 +1087,14 @@ def follow_through(df: pd.DataFrame) -> int:
 
 def intraday_confirm(ticker: str) -> int:
     try:
-        df5 = yf.download(tickers=ticker, period="5d", interval="5m",  # [K5] 2d → 5d
-                          progress=False, auto_adjust=True)
+        # [V6.0.0 #8] Retry 2x — yfinance 5m sering gagal transient di jam sibuk
+        df5 = None
+        for attempt in range(2):
+            df5 = yf.download(tickers=ticker, period="5d", interval="5m",
+                              progress=False, auto_adjust=True)
+            if df5 is not None and len(df5) >= 10:
+                break
+            time.sleep(1.5)
         if df5 is None or len(df5) < 10:
             return 0
         latest_date = pd.to_datetime(df5.index[-1]).date()
@@ -1063,55 +1157,17 @@ def is_trap_signal(value) -> bool:
 # ── PRIORITAS 4: ADAPTIVE WEIGHT ENGINE ─────────────────────
 # Bobot scoring adaptif per regime — tidak lagi hardcode statis
 REGIME_WEIGHTS: dict[str, dict] = {
-    "BULLISH": {
-        "prob":     0.30,   # momentum paling penting saat bullish
-        "runner":   0.25,
-        "quality":  0.10,
-        "rr":       0.15,
-        "liquidity":0.10,
-        "bandar":   0.10,
-        # bonus multipliers untuk scan_core
-        "momentum_w": 1.2,
-        "accum_w":    0.8,
-        "ft_w":       1.0,
-        "intraday_w": 0.8,
-    },
-    "SIDEWAYS": {
-        "prob":     0.20,
-        "runner":   0.15,
-        "quality":  0.15,
-        "rr":       0.25,   # RR paling penting saat sideways
-        "liquidity":0.10,
-        "bandar":   0.15,
-        "momentum_w": 0.8,
-        "accum_w":    1.2,  # akumulasi lebih penting
-        "ft_w":       0.8,
-        "intraday_w": 1.0,
-    },
-    "DISTRIBUTION": {
-        "prob":     0.15,
-        "runner":   0.10,
-        "quality":  0.15,
-        "rr":       0.20,
-        "liquidity":0.25,   # likuiditas paling penting saat distribusi
-        "bandar":   0.15,
-        "momentum_w": 0.6,
-        "accum_w":    1.0,
-        "ft_w":       0.6,
-        "intraday_w": 1.2,
-    },
-    "VOLATILE": {
-        "prob":     0.20,
-        "runner":   0.15,
-        "quality":  0.10,
-        "rr":       0.25,
-        "liquidity":0.20,
-        "bandar":   0.10,
-        "momentum_w": 0.7,
-        "accum_w":    0.9,
-        "ft_w":       0.8,
-        "intraday_w": 1.3,
-    },
+    # [V6.0.0 #1] 5 komponen utama, bobot per regime SELALU sum = 1.0
+    # → max score dijamin <= 100 by construction (bukan by cap)
+    # trend    = (prob + runner) / 2  → kekuatan struktur & potensi runner
+    # bandar   = akumulasi institusi  → bobot berat (2x kelas ringan)
+    # breakout = kualitas breakout multi-TF
+    # momentum = momentum D1 + follow-through (digabung, single counting)
+    # rr       = risk/reward setup
+    "BULLISH":      {"trend": 0.30, "bandar": 0.15, "breakout": 0.20, "momentum": 0.25, "rr": 0.10},
+    "SIDEWAYS":     {"trend": 0.20, "bandar": 0.25, "breakout": 0.20, "momentum": 0.10, "rr": 0.25},
+    "DISTRIBUTION": {"trend": 0.15, "bandar": 0.30, "breakout": 0.20, "momentum": 0.05, "rr": 0.30},
+    "VOLATILE":     {"trend": 0.20, "bandar": 0.20, "breakout": 0.20, "momentum": 0.10, "rr": 0.30},
 }
 
 def get_adaptive_weights(regime: str) -> dict:
@@ -1183,41 +1239,82 @@ def get_market_breadth_cached(market: dict) -> tuple[float, str, dict]:
 
 
 # ============================================================
+# [V6.0.0 #9] REGIME DETECTION — LEADING INDICATORS
+# ============================================================
+def detect_market_regime_v6(market: dict) -> str:
+    """
+    Regime detection dengan leading indicators, bukan hanya breadth 1-hari (reaktif):
+    1. Breadth      : up vs down hari ini (lama — tetap dipakai, cepat tapi noisy)
+    2. NH/NL ratio  : new 20d high vs new 20d low — struktur, bukan noise harian
+    3. %>EMA20      : persentase universe di atas EMA20 — trend partisipasi
+    Kombinasi 2 & 3 mendeteksi perubahan regime SEBELUM breadth harian berbalik penuh.
+    Fallback ke engine lama jika data error.
+    """
+    try:
+        up = down = nh = nl = above_ema20 = total = 0
+        for _, df in market.items():
+            close = df["Close"].squeeze()
+            if len(close) < 25:
+                continue
+            total += 1
+            last, prev = float(close.iloc[-1]), float(close.iloc[-2])
+            if last > prev: up += 1
+            else:           down += 1
+            hi20 = float(df["High"].squeeze().iloc[:-1].tail(20).max())
+            lo20 = float(df["Low"].squeeze().iloc[:-1].tail(20).min())
+            if last >= hi20: nh += 1
+            if last <= lo20: nl += 1
+            ema20 = float(close.ewm(span=20, adjust=False).mean().iloc[-1])
+            if last > ema20: above_ema20 += 1
+
+        if total < 10:
+            return detect_market_regime(market)   # data terlalu tipis → fallback
+
+        pct_above = above_ema20 / total * 100
+        nh_dom    = nh >= max(2, nl * 2)          # NH dominan (min 2 utk hindari 1v0)
+        nl_dom    = nl >= max(2, nh * 2)
+
+        # BULLISH: breadth kuat ATAU struktur leading (NH dominan + partisipasi tinggi)
+        if up > down * 1.4 or (nh_dom and pct_above > 55):
+            return "BULLISH"
+        # DISTRIBUTION: breadth negatif kuat ATAU struktur rusak lebih dulu
+        if down > up * 1.5 or (nl_dom and pct_above < 40):
+            return "DISTRIBUTION"
+        return "SIDEWAYS"
+    except Exception:
+        return detect_market_regime(market)
+
+
+# ============================================================
 # SCORE — upgrade dengan adaptive weights
 # ============================================================
-def calculate_score(prob: float, runner: float, quality: str,
-                    rr: float, liquidity: str, bandar_score: int,
-                    regime: str = "SIDEWAYS") -> float:
+def calculate_score(prob: float, runner: float, breakout: str,
+                    momentum: int, ft: int, rr: float,
+                    bandar_score: int, regime: str = "SIDEWAYS") -> float:
     """
-    Scoring dengan adaptive weights per regime.
-    Backward compatible — regime default SIDEWAYS = perilaku lama.
-
-    [FIX #2] RR bonus +3 untuk RR>=2.5 sekarang clamp ke maksimum
-    (weights["rr"] * 100) — sebelumnya bisa overflow saat BULLISH.
-    Dengan fix ini, max base_score dijamin <= 100.0 di semua regime.
+    [V6.0.0 #1] Scoring disederhanakan: 5 komponen utama, weighted, sum bobot = 1.0.
+    Perubahan vs V5.8.2:
+    - Stack bonus eksternal (momentum/accum/ft/intraday/extra) DIHAPUS → double counting
+      momentum dihitung 3x (base prob, momentum_bonus, ft_bonus) di versi lama
+    - Liquidity DIHAPUS dari score: semua kandidat yang sampai scoring sudah lolos
+      trap filter → liq selalu "OK" → konstanta yang mengkompresi diskriminasi score
+    - Quality DIHAPUS dari score: tetap tampil sbg kolom info, tidak menggandakan trend
+    - Max teoretis = 100.0 persis (semua komponen 0-100, bobot sum 1.0)
     """
-    weights = get_adaptive_weights(regime)
+    w = get_adaptive_weights(regime)
 
-    prob_score    = (max(0, min(100, prob)) / 100) * (weights["prob"] * 100)
-    runner_score  = (max(0, min(100, runner)) / 100) * (weights["runner"] * 100)
-    quality_map   = {"WEAK": 3, "HEALTHY": 10, "STRONG": 15}
-    quality_score = quality_map.get(quality, 0) * (weights["quality"] / 0.15)
+    trend_c    = (max(0, min(100, prob)) + max(0, min(100, runner))) / 2
+    bandar_c   = (max(0, min(4, bandar_score)) / 4) * 100
+    breakout_c = {"STRONG": 100, "VALID": 80, "WEAK": 45}.get(breakout, 0)
+    mom_c      = (min(2, max(0, momentum)) / 2 * 0.6 + min(2, max(0, ft)) / 2 * 0.4) * 100
+    rr_c       = (max(0, min(4.0, rr)) / 4.0) * 100
 
-    # RR base score — dijamin <= weights["rr"] * 100
-    rr_max  = weights["rr"] * 100
-    rr_base = (max(0, min(4.0, rr)) / 4.0) * rr_max
-    if rr >= 2.5:
-        rr_base = min(rr_max, rr_base + 3)   # bonus, tapi tetap di-cap di rr_max
-    rr_score = rr_base
-
-    liq_score  = weights["liquidity"] * 100 if "OK" in str(liquidity) else 0
-    bandar_pts = (max(0, min(4, bandar_score)) / 4) * (weights["bandar"] * 100)
-
-    total = prob_score + runner_score + quality_score + rr_score + liq_score + bandar_pts
-    # Safety cap: dengan adaptive weights, max teoretis bisa sedikit > 100
-    # karena quality_map.STRONG=15 di-scale dengan multiplier (W/0.15).
-    # Cap di 100 untuk konsistensi distribusi score.
-    return round(min(100.0, total), 2)
+    total = (trend_c    * w["trend"]    +
+             bandar_c   * w["bandar"]   +
+             breakout_c * w["breakout"] +
+             mom_c      * w["momentum"] +
+             rr_c       * w["rr"])
+    return round(min(100.0, max(0.0, total)), 2)
 
 
 
@@ -1238,19 +1335,19 @@ def get_bear_mode_params(regime: str) -> dict:
     if is_bear_mode(regime):
         return {
             "rr_min":       1.3,   # turun dari 1.8
-            "conf_min":     2,     # turun dari 3
+            "conf_ratio":   0.55,  # [V6.0.0 #2] weighted confluence: 55% saat bear
             "rr_confluence": 1.3,  # RR_Layak di confluence
             "score_min":    60,    # turun dari 70
             "label":        "🐻 BEAR MODE",
         }
     return {
         "rr_min":       1.8,
-        # [V5.8.1 FIX #2] Confluence minimum: BULLISH 4 → 3 untuk semua non-bear regime
-        # Root cause: ironi — saat BULLISH (kondisi terbaik) sistem justru paling ketat (4/6).
-        # Saat bullish, bandar sering score 0 karena volume sudah "flat" setelah spike kemarin.
-        # Tanpa bandar: max reachable = 5/6. Butuh 4 tapi borderline, terlalu sering gagal.
-        # 3/6 untuk semua kondisi non-bear = konsisten dan tidak bias melawan kondisi terbaik.
-        "conf_min":     3,
+        # [V6.0.0 #2] Count sederhana (3/6) → weighted ratio 70%.
+        # Rationale: 3/6 memperlakukan semua sinyal sama penting — Momentum+RR+Uptrend
+        # bisa lolos tanpa Bandar & Breakout sama sekali (sinyal ringan semua).
+        # Weighted: Bandar 2x, Breakout 2x (WEAK=1x), sisanya 1x. Max 8 poin.
+        # 70% = 5.6/8 → sinyal WAJIB punya minimal satu komponen berat.
+        "conf_ratio":   0.70,
         "rr_confluence": 1.8,
         "score_min":    70,
         "label":        "NORMAL",
@@ -1258,19 +1355,33 @@ def get_bear_mode_params(regime: str) -> dict:
 
 def confluence_check(momentum: int, accum: int, bandar: int,
                      breakout: str, rr: float, ema_ok: bool,
-                     regime: str = "SIDEWAYS") -> tuple[int, dict, bool]:
+                     regime: str = "SIDEWAYS") -> tuple[float, dict, bool]:
+    """
+    [V6.0.0 #2] Weighted confluence. Return (weighted_score, signals, passed).
+    Bobot: Bandar 2, Breakout STRONG/VALID 2 (WEAK 1), Momentum/Accum/RR/Uptrend 1.
+    Max = 8. Pass jika weighted/8 >= conf_ratio (0.70 normal, 0.55 bear).
+    """
     bm = get_bear_mode_params(regime)
+    breakout_w = 2 if breakout in ("STRONG", "VALID") else (1 if breakout == "WEAK" else 0)
     signals = {
         "Momentum":     momentum >= 1,
         "Accumulation": accum >= 2,
         "Bandar":       bandar >= 2,
-        "Breakout":     breakout in ("VALID", "WEAK"),
+        "Breakout":     breakout_w > 0,
         "RR_Layak":     rr >= bm["rr_confluence"],
         "Uptrend":      ema_ok,
     }
-    count = sum(signals.values())
-    min_conf = bm["conf_min"]
-    return count, signals, count >= min_conf
+    weighted = (
+        (2 if signals["Bandar"] else 0) +
+        breakout_w +
+        (1 if signals["Momentum"]     else 0) +
+        (1 if signals["Accumulation"] else 0) +
+        (1 if signals["RR_Layak"]     else 0) +
+        (1 if signals["Uptrend"]      else 0)
+    )
+    CONF_MAX = 8.0
+    passed = (weighted / CONF_MAX) >= bm["conf_ratio"]
+    return float(weighted), signals, passed
 
 # ============================================================
 # DYNAMIC THRESHOLD
@@ -1332,6 +1443,32 @@ def cybernetic_feedback_engine(journal_df: pd.DataFrame, current_regime: str):
     return params
 
 # ============================================================
+# [V6.0.0 #7] DYNAMIC SIGNAL LOCK
+# ============================================================
+SIGNAL_RANK = {"🔥 EXECUTE NOW": 2, "✅ EXECUTE": 1}
+
+def get_signal_lock_time(action: str) -> int:
+    """
+    Dynamic lock 10-60 menit berdasarkan kekuatan sinyal:
+    - EXECUTE NOW (kuat) → 3600s: sinyal sudah maksimal, re-alert = spam murni
+    - EXECUTE            → 1200s: masih bisa berkembang, jangan lock terlalu lama
+    Upgrade bypass ditangani via can_send_signal() — EXECUTE → EXECUTE NOW
+    menembus lock (informasi baru), downgrade tidak.
+    """
+    return 3600 if action == "🔥 EXECUTE NOW" else 1200
+
+def can_send_signal(tkr: str, action: str, now_ts: float,
+                    sig_lock: dict, sig_action: dict) -> bool:
+    """Cek lock + upgrade bypass. Kedua dict dimodifikasi caller setelah kirim."""
+    last_ts     = sig_lock.get(tkr, 0)
+    last_action = sig_action.get(tkr, "")
+    lock_dur    = get_signal_lock_time(last_action or action)
+    if now_ts - last_ts >= lock_dur:
+        return True
+    # Masih dalam lock — hanya lolos jika UPGRADE kekuatan sinyal
+    return SIGNAL_RANK.get(action, 0) > SIGNAL_RANK.get(last_action, 0)
+
+# ============================================================
 # ENTRY SYSTEM
 # ============================================================
 # [B1] entry_system terima thresholds & cyber_params secara eksplisit
@@ -1368,10 +1505,10 @@ def entry_system(row: pd.Series,
     # [B3] EXECUTE NOW: tidak lagi pakai timing (self-contradictory)
     # Cukup: score sangat tinggi + bandar kuat + breakout valid + momentum ok
     if (score >= exec_now_th and rr >= 2.0 and
-            breakout == "VALID" and bandar >= 3 and momentum >= 1):
+            breakout in ("STRONG", "VALID") and bandar >= 3 and momentum >= 1):
         return "🔥 EXECUTE NOW"
 
-    if score >= exec_th and rr >= min_rr and breakout in ("VALID", "WEAK") and bandar >= 2:
+    if score >= exec_th and rr >= min_rr and breakout in ("STRONG", "VALID", "WEAK") and bandar >= 2:
         return "✅ EXECUTE"
 
     if score >= ready_th:
@@ -1390,6 +1527,7 @@ if "state_loaded" not in st.session_state:
     _state = _load_persistent_state()
     st.session_state.cybernetic_params = _state.get("cybernetic_params", ...)
     st.session_state.signal_lock       = _state.get("signal_lock", {})
+    st.session_state.signal_action     = _state.get("signal_action", {})
     st.session_state.balance           = _state.get("balance", 800_000)
     st.session_state.last_regime       = _state.get("last_regime", "-")  # ← ini yang ditambah
     st.session_state.state_loaded      = True
@@ -1517,15 +1655,25 @@ def _fetch_today_intraday_raw(tickers_tuple: tuple) -> dict:
         return result   # Bukan hari bursa, skip
 
     try:
-        raw = yf.download(
-            tickers=list(tickers_tuple),
-            period="1d",
-            interval="5m",
-            group_by="ticker",
-            progress=False,
-            auto_adjust=True,
-        )
+        # [V6.0.0 #8] Retry 2x + fallback interval 15m — hilangkan silent fail
+        raw = None
+        for attempt in range(2):
+            raw = yf.download(
+                tickers=list(tickers_tuple), period="1d", interval="5m",
+                group_by="ticker", progress=False, auto_adjust=True,
+            )
+            if raw is not None and not raw.empty:
+                break
+            LOG.warning(f"intraday 5m fetch gagal (attempt {attempt+1}/2), retry...")
+            time.sleep(2)
         if raw is None or raw.empty:
+            LOG.warning("intraday 5m gagal total — fallback ke interval 15m")
+            raw = yf.download(
+                tickers=list(tickers_tuple), period="1d", interval="15m",
+                group_by="ticker", progress=False, auto_adjust=True,
+            )
+        if raw is None or raw.empty:
+            LOG.error("intraday fetch gagal termasuk fallback 15m — scanner pakai data D1 kemarin")
             return result
 
         for tkr in tickers_tuple:
@@ -1785,7 +1933,7 @@ def format_telegram_signal(row: dict, regime: str, market: dict) -> str:
         f"📊 ATS SIGNAL\n"
         f"Score      : {row.get('Score', 0):.1f}/100\n"
         f"RR         : {row.get('RR', 0):.1f}x\n"
-        f"Confluence : {row.get('Confluence', 0)}/6\n"
+        f"Confluence : {row.get('Confluence', 0):.0f}/8\n"
         f"Change     : {row.get('Change%', 0):+.2f}%\n"
         f"Breakout   : {row.get('Breakout', '-')}\n\n"
         f"💰 LEVEL TRADING\n"
@@ -1841,7 +1989,7 @@ def format_telegram_signal_bg(row: dict, regime: str) -> str:
         f"📊 ATS SIGNAL\n"
         f"Score      : {row.get('Score', 0):.1f}/100\n"
         f"RR         : {row.get('RR', 0):.1f}x\n"
-        f"Confluence : {row.get('Confluence', 0)}/6\n"
+        f"Confluence : {row.get('Confluence', 0):.0f}/8\n"
         f"Change     : {row.get('Change%', 0):+.2f}%\n"
         f"Breakout   : {row.get('Breakout', '-')}\n"
         f"RSI        : {row.get('RSI', 0):.1f}\n\n"
@@ -1862,14 +2010,11 @@ def scan_core(market: dict, balance: float, top_n: int = 5,
     Inti scanner V5.1 — semua engine terintegrasi.
     Return: (scan_df, debug_df, thresholds, regime, sector_df)
     """
-    regime       = detect_market_regime(market)
+    regime       = detect_market_regime_v6(market)   # [V6.0.0 #9] leading indicators
     sector_power = sector_momentum(market, SECTOR_MAP)
     sector_df    = pd.DataFrame(
         [{"Sector": k, "Strength": round(v, 2)} for k, v in sector_power.items()]
     ).sort_values("Strength", ascending=False)
-
-    # ── P4: Adaptive weights berdasarkan regime ──────────────
-    ada_weights = get_adaptive_weights(regime)
 
     # Buat sector strength lookup
     sector_strength_map = {
@@ -1943,28 +2088,34 @@ def scan_core(market: dict, balance: float, top_n: int = 5,
             timing   = entry_timing(df)
             chg_pct  = daily_change_pct(df)
 
-            # Entry freshness — batas bergerak tergantung kekuatan breakout:
-            # VALID breakout  → boleh sampai +7% (momentum kuat, masih layak masuk)
-            # WEAK breakout   → boleh sampai +5%
-            # Tanpa breakout  → maksimal +3% (entry sudah terlambat)
-            # [V5.5.3 FIX B] WAIT freshness 3.0 → 4.5 berdasarkan analisis CSV debug:
-            # 8 saham momentum kuat (TINS+6.4%, CPIN+4.2%, INDF+3.3%, dll) gugur padahal
-            # masih dalam zona reasonable entry. 4.5% adalah balance antara FOMO protection
-            # dan tidak melewatkan momentum gradual. Tetap < WEAK (5.0%) by design.
+            # [V6.0.0 #5] Entry freshness — dynamic limit + pullback detection.
+            # Base tier per kekuatan breakout, lalu:
+            # (a) ATR-scaled: saham volatil (ATR% tinggi) wajar bergerak lebih besar
+            # (b) Pullback detection: harga sudah turun >=1.5% dari high hari ini
+            #     = koreksi sehat sedang berjalan → limit +2% (entry saat pullback
+            #     BUKAN chasing, justru entry yang diinginkan)
             strong_daily_momentum = momentum == 2 or ft == 2
-            freshness_limit = (
-                9.0 if breakout == "VALID" and strong_daily_momentum else
+            base_limit = (
+                9.0 if breakout == "STRONG" else
+                8.0 if breakout == "VALID" and strong_daily_momentum else
                 7.0 if breakout == "VALID" else
                 6.0 if breakout == "WEAK" and strong_daily_momentum else
                 5.0 if breakout == "WEAK" else
-                4.5   # WAIT: 3.0 → 4.5
+                4.5
             )
+            atr_pct_f  = (atr / entry * 100) if entry > 0 else 0
+            atr_adj    = min(2.0, max(0.0, (atr_pct_f - 3.0) * 0.5))   # ATR>3% → +0..2%
+            day_high   = float(df["High"].squeeze().iloc[-1])
+            off_high   = (day_high - last_price) / day_high * 100 if day_high > 0 else 0
+            is_pullback   = off_high >= 1.5 and chg_pct > 0   # turun dari high tapi masih hijau
+            pullback_adj  = 2.0 if is_pullback else 0.0
+            freshness_limit = base_limit + atr_adj + pullback_adj
             if chg_pct > freshness_limit:
                 debug_log.append({"Ticker": tkr_clean, "Sector": sector,
                     "RSI": round(rsi_value, 1), "EMA_OK": "✅" if ema_ok else "❌",
                     "Bandar": "-", "Breakout": breakout,
                     "Confluence": "-", "RR": round(rr, 1), "Score": "-",
-                    "❌ Gugur di": f"Entry expired: naik {chg_pct:.1f}% (batas {freshness_limit:.1f}% untuk breakout {breakout})"})
+                    "❌ Gugur di": f"Entry expired: naik {chg_pct:.1f}% (limit dinamis {freshness_limit:.1f}%: base {base_limit:.1f} +ATR {atr_adj:.1f} +pullback {pullback_adj:.1f})"})
                 continue
 
             # Filter 3: Breakout gate — [BEAR MODE V5.7.0]
@@ -2020,12 +2171,12 @@ def scan_core(market: dict, balance: float, top_n: int = 5,
             if not conf_passed:
                 failed = [k for k, v in conf_signals.items() if not v]
                 bm_c   = get_bear_mode_params(regime)
-                min_c  = bm_c["conf_min"]  # [V5.8.1] selalu 3 (non-bear) atau 2 (bear)
+                min_w  = bm_c["conf_ratio"] * 8   # [V6.0.0 #2] weighted, max 8
                 debug_log.append({"Ticker": tkr_clean, "Sector": sector,
                     "RSI": round(rsi_value, 1), "EMA_OK": "✅" if ema_ok else "❌",
                     "Bandar": bandar, "Breakout": breakout,
-                    "Confluence": f"{conf_count}/6", "RR": round(rr, 1), "Score": "-",
-                    "❌ Gugur di": f"Confluence {conf_count}/6 < {min_c} (gagal: {', '.join(failed)})"})
+                    "Confluence": f"{conf_count:.0f}/8", "RR": round(rr, 1), "Score": "-",
+                    "❌ Gugur di": f"Weighted confluence {conf_count:.0f}/8 < {min_w:.1f} (gagal: {', '.join(failed)})"})
                 continue
 
             # Filter 5: RR — [BEAR MODE V5.7.0] threshold adaptif
@@ -2035,7 +2186,7 @@ def scan_core(market: dict, balance: float, top_n: int = 5,
                 debug_log.append({"Ticker": tkr_clean, "Sector": sector,
                     "RSI": round(rsi_value, 1), "EMA_OK": "✅" if ema_ok else "❌",
                     "Bandar": bandar, "Breakout": breakout,
-                    "Confluence": f"{conf_count}/6", "RR": round(rr, 1), "Score": "-",
+                    "Confluence": f"{conf_count:.0f}/8", "RR": round(rr, 1), "Score": "-",
                     "❌ Gugur di": f"RR terlalu rendah ({rr:.1f}, min {rr_min} [{bm_params[chr(39)]+'label'+chr(39)}])"})
                 continue
 
@@ -2066,40 +2217,29 @@ def scan_core(market: dict, balance: float, top_n: int = 5,
                 debug_log.append({"Ticker": tkr_clean, "Sector": sector,
                     "RSI": round(rsi_value, 1), "EMA_OK": "✅" if ema_ok else "❌",
                     "Bandar": bandar, "Breakout": breakout,
-                    "Confluence": f"{conf_count}/6", "RR": round(rr, 1), "Score": "-",
+                    "Confluence": f"{conf_count:.0f}/8", "RR": round(rr, 1), "Score": "-",
                     "❌ Gugur di": (
                         f"Saham slow mover ({', '.join(slow_mover_reasons)}) "
                         f"— modal bisa stuck"
                     )})
                 continue
 
-            # ── SCORING V5.1 — P4 Adaptive + P6 Starvation ─
-            # P4: Adaptive score dengan regime weights
-            base_score = calculate_score(prob, runner, quality, rr, liq_str, bandar, regime)
-
-            # Adaptive bonus multipliers per regime
-            momentum_bonus = momentum * 0.8 * ada_weights["momentum_w"]
-            accum_bonus    = accum    * 0.9 * ada_weights["accum_w"]
-            ft_bonus       = ft       * 0.7 * ada_weights["ft_w"]
-            intra_bonus    = intraday * 0.5 * ada_weights["intraday_w"]
-
-            extra_bonus = 0.0
-            if momentum == 2:               extra_bonus += 1
-            if ft == 2:                     extra_bonus += 1
-            if last_price > ema_val * 1.01: extra_bonus += 1
-
-            score = (base_score + momentum_bonus + accum_bonus +
-                     ft_bonus + intra_bonus + extra_bonus + sector_score_adj)
-            score = min(100.0, max(0.0, score))
+            # ── [V6.0.0 #1] SCORING — 5 komponen, no bonus stack ─
+            # Double counting dihapus: momentum tidak lagi dihitung 3x
+            # (base + momentum_bonus + ft_bonus di V5.8.2). Intraday & accum
+            # tetap jadi filter/confluence, tidak menginflasi score.
+            base_score = calculate_score(prob, runner, breakout,
+                                         momentum, ft, rr, bandar, regime)
+            score = min(100.0, max(0.0, base_score + sector_score_adj))
 
             # [Task 2] Score breakdown untuk explainability
+            w_bd = get_adaptive_weights(regime)
             score_breakdown = {
-                "base":      round(base_score, 1),
-                "momentum":  round(momentum_bonus, 1),
-                "accum":     round(accum_bonus, 1),
-                "ft":        round(ft_bonus, 1),
-                "intraday":  round(intra_bonus, 1),
-                "extra":     round(extra_bonus, 1),
+                "trend":     round((prob + runner) / 2 * w_bd["trend"], 1),
+                "bandar":    round(max(0, min(4, bandar)) / 4 * 100 * w_bd["bandar"], 1),
+                "breakout":  round({"STRONG": 100, "VALID": 80, "WEAK": 45}.get(breakout, 0) * w_bd["breakout"], 1),
+                "momentum":  round((min(2, momentum) / 2 * 0.6 + min(2, ft) / 2 * 0.4) * 100 * w_bd["momentum"], 1),
+                "rr":        round(max(0, min(4.0, rr)) / 4.0 * 100 * w_bd["rr"], 1),
                 "sector":    round(sector_score_adj, 1),
                 "final":     round(score, 1),
             }
@@ -2124,7 +2264,7 @@ def scan_core(market: dict, balance: float, top_n: int = 5,
             debug_log.append({"Ticker": tkr_clean, "Sector": sector,
                 "RSI": round(rsi_value, 1), "EMA_OK": "✅" if ema_ok else "❌",
                 "Bandar": bandar, "Breakout": breakout,
-                "Confluence": f"{conf_count}/6", "RR": round(rr, 1),
+                "Confluence": f"{conf_count:.0f}/8", "RR": round(rr, 1),
                 "Score": round(score, 1),
                 "❌ Gugur di": f"✅ LOLOS — masuk kandidat ({sector_note} sektor)"})
 
@@ -2389,29 +2529,29 @@ def run_scanner():
     # ============================================================
     if scan_df is not None and not scan_df.empty:
         now_ts = time.time()
-        
-        # FIX: Diturunkan dari 3600 ke 600 detik (10 menit) agar menangkap tarikan harga sore
-        lock_time = 600  
+
+        # [V6.0.0 #7] Dynamic lock per kekuatan sinyal + upgrade bypass
+        if "signal_action" not in st.session_state:
+            st.session_state.signal_action = {}
         sent = []
-        
+
         for _, row in scan_df.iterrows():
             tkr = row["Ticker"]
             action = row.get("Action", "")
-            
-            # Hanya tembak notifikasi jika status menunjukkan sinyal eksekusi
-            if action not in ("🔥 EXECUTE NOW", "✅ EXECUTE"): 
+
+            if action not in ("🔥 EXECUTE NOW", "✅ EXECUTE"):
                 continue
-                
-            # Cek status lock agar tidak terkena spam/rate-limit Telegram API
-            if now_ts - st.session_state.signal_lock.get(tkr, 0) < lock_time: 
+
+            if not can_send_signal(tkr, action, now_ts,
+                                   st.session_state.signal_lock,
+                                   st.session_state.signal_action):
                 continue
-                
-            # Format pesan telegram adaptif sesuai data matriks emiten
-            msg = format_telegram_signal(row, regime, thresholds) 
-            
-            # Trigger pengiriman via Thread-Safe Telegram Gate
+
+            msg = format_telegram_signal(row, regime, thresholds)
+
             if send_telegram(msg):
-                st.session_state.signal_lock[tkr] = now_ts
+                st.session_state.signal_lock[tkr]   = now_ts
+                st.session_state.signal_action[tkr] = action
                 sent.append(tkr)
         
         # Jika ada alert baru yang berhasil lolos kualifikasi
@@ -2508,20 +2648,24 @@ def auto_scan_background():
 
         # Simpan thresholds ke session state agar entry_system bisa baca
         # (background thread tidak punya session state, pakai dict langsung)
-        now_ts    = time.time()
-        lock_time = 3600
-        sent_any  = False
+        now_ts     = time.time()
+        sig_action = _state.get("signal_action", {})
+        if not isinstance(sig_action, dict):
+            sig_action = {}
+        sent_any   = False
 
         for _, row in scan_df.iterrows():
             tkr    = row["Ticker"]
             action = row.get("Action", "")
             if action not in ("🔥 EXECUTE NOW", "✅ EXECUTE"): continue
-            if now_ts - sig_lock.get(tkr, 0) < lock_time: continue
+            # [V6.0.0 #7] Dynamic lock + upgrade bypass
+            if not can_send_signal(tkr, action, now_ts, sig_lock, sig_action): continue
 
             chg = row.get("Change%", 0)
             msg = format_telegram_signal_bg(row, regime)   # [P1] enriched background
             send_telegram(msg)
-            sig_lock[tkr] = now_ts
+            sig_lock[tkr]   = now_ts
+            sig_action[tkr] = action
             sent_any = True
 
         # [I7] Summary kalau tidak ada EXECUTE
@@ -2545,6 +2689,7 @@ def auto_scan_background():
                 except Exception:
                     st_data = {}
                 st_data["signal_lock"]       = sig_lock
+                st_data["signal_action"]     = sig_action
                 st_data["last_regime"]       = regime
                 st_data["last_scan_tickers"] = scan_df["Ticker"].tolist() if not scan_df.empty else []
                 tmp_path = STATE_FILE + ".tmp_bg"
@@ -2843,18 +2988,22 @@ def mini_scan_spike(spike_candidates: list, regime: str = "SIDEWAYS"):
             if breakout == "WAIT":   # [V5.6.3] Bandar bukan hard gate — konsisten dengan scan_core
                 continue
 
+            # [V6.0.0 #5] Sync dynamic freshness dengan scan_core
             strong_daily_momentum = momentum == 2 or ft == 2
-            # [V5.5.3 FIX B] Sync dengan scan_core: WAIT 3.0 → 4.5
-            # (Note: di mini_scan_spike branch ini tidak tercapai karena
-            #  WAIT sudah di-skip di filter sebelumnya, tapi tetap di-update
-            #  untuk konsistensi behavioral kedua scanner)
-            freshness_limit = (
-                9.0 if breakout == "VALID" and strong_daily_momentum else
+            base_limit = (
+                9.0 if breakout == "STRONG" else
+                8.0 if breakout == "VALID" and strong_daily_momentum else
                 7.0 if breakout == "VALID" else
                 6.0 if breakout == "WEAK" and strong_daily_momentum else
                 5.0 if breakout == "WEAK" else
                 4.5
             )
+            atr_pct_f = (atr / entry * 100) if entry > 0 else 0
+            atr_adj   = min(2.0, max(0.0, (atr_pct_f - 3.0) * 0.5))
+            day_high  = float(df_daily["High"].squeeze().iloc[-1])
+            off_high  = (day_high - last_price) / day_high * 100 if day_high > 0 else 0
+            pullback_adj = 2.0 if (off_high >= 1.5 and chg_pct > 0) else 0.0
+            freshness_limit = base_limit + atr_adj + pullback_adj
             if chg_pct > freshness_limit:
                 continue
 
@@ -2872,7 +3021,8 @@ def mini_scan_spike(spike_candidates: list, regime: str = "SIDEWAYS"):
             if is_liq_trap or is_fake_bo:
                 continue
 
-            if breakout == "WEAK" and not (momentum == 2 or intraday >= 2 or ft == 2):
+            # [V6.0.0] Sync dengan scan_core V5.8.1: cukup satu sinyal lemah confirm
+            if breakout == "WEAK" and not (momentum >= 1 or bandar >= 1 or ft >= 1):
                 continue
 
             conf_count, _, conf_passed = confluence_check(
@@ -2881,19 +3031,9 @@ def mini_scan_spike(spike_candidates: list, regime: str = "SIDEWAYS"):
             if not conf_passed:
                 continue
 
-            # [FIX #1] Scoring regime-aware — konsisten dengan scan_core
-            # Sebelumnya: calculate_score tanpa regime (default SIDEWAYS) + hardcoded multipliers
-            # Sekarang: pass spike_regime ke calculate_score + pakai ada_weights untuk bonus
-            ada_w  = get_adaptive_weights(spike_regime)
-            score  = calculate_score(prob, runner, quality, rr, liq_str, bandar, spike_regime)
-            score += (momentum * 0.8 * ada_w["momentum_w"] +
-                      accum    * 0.9 * ada_w["accum_w"]    +
-                      ft       * 0.7 * ada_w["ft_w"]       +
-                      intraday * 0.5 * ada_w["intraday_w"])
-            if momentum == 2:               score = min(100, score + 1)
-            if ft == 2:                     score = min(100, score + 1)
-            if last_price > ema_val * 1.01: score = min(100, score + 1)
-            score = min(100.0, score)
+            # [V6.0.0 #1] Scoring 5 komponen — identik dengan scan_core, no bonus stack
+            score = calculate_score(prob, runner, breakout,
+                                    momentum, ft, rr, bandar, spike_regime)
             lot   = position_sizing(balance, 0.02, entry, sl, atr)
 
             # Kirim Telegram spike alert
@@ -2902,7 +3042,7 @@ def mini_scan_spike(spike_candidates: list, regime: str = "SIDEWAYS"):
                 last_price > ema_val,
                 momentum >= 1,
                 bandar >= 2,
-                breakout in ("VALID","WEAK"),
+                breakout in ("STRONG","VALID","WEAK"),
                 rr >= 1.8,
             ])
             alignment_bar = "█" * alignment_val + "░" * (6 - alignment_val)
@@ -2920,7 +3060,7 @@ def mini_scan_spike(spike_candidates: list, regime: str = "SIDEWAYS"):
                 f"📊 SCORING\n"
                 f"Score      : {score:.1f}/100\n"
                 f"RR         : {rr:.1f}x\n"
-                f"Confluence : {conf_count}/6\n"
+                f"Confluence : {conf_count:.0f}/8\n"
                 f"RSI        : {rsi_value:.1f}\n"
                 f"Alignment  : [{alignment_bar}] {alignment_val}/6\n\n"
                 f"💰 LEVEL\n"
@@ -4407,12 +4547,12 @@ with tabs[1]:
                     elif v < 0:  return f"  − {label}: **{v:.1f}**"
                     else:        return f"  · {label}: 0"
 
-                lines_md.append(f"  base score: {bd.get('base', 0):.1f}")
-                if bd.get("momentum", 0) != 0: lines_md.append(fmt(bd["momentum"], "momentum"))
-                if bd.get("accum", 0)    != 0: lines_md.append(fmt(bd["accum"],    "accumulation"))
-                if bd.get("ft", 0)       != 0: lines_md.append(fmt(bd["ft"],       "follow-through"))
-                if bd.get("intraday", 0) != 0: lines_md.append(fmt(bd["intraday"], "intraday"))
-                if bd.get("extra", 0)    != 0: lines_md.append(fmt(bd["extra"],    "bonus tambahan"))
+                # [V6.0.0 #1] Breakdown 5 komponen weighted (bukan base+bonus stack)
+                if bd.get("trend", 0)    != 0: lines_md.append(fmt(bd["trend"],    "trend (prob+runner)"))
+                if bd.get("bandar", 0)   != 0: lines_md.append(fmt(bd["bandar"],   "bandar"))
+                if bd.get("breakout", 0) != 0: lines_md.append(fmt(bd["breakout"], "breakout"))
+                if bd.get("momentum", 0) != 0: lines_md.append(fmt(bd["momentum"], "momentum (mom+ft)"))
+                if bd.get("rr", 0)       != 0: lines_md.append(fmt(bd["rr"],       "risk/reward"))
                 if bd.get("sector", 0)   != 0: lines_md.append(fmt(bd["sector"],   "sector adjustment"))
                 lines_md.append(f"  ─────────────────────────────")
                 lines_md.append(f"  **Final: {bd.get('final', 0):.1f}**")
