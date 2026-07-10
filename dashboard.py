@@ -312,7 +312,7 @@ def rolling_vwap(df: pd.DataFrame, window: int = 20) -> pd.Series:
     pv = close * volume
     return pv.rolling(window).sum() / volume.rolling(window).sum()
 
-# ─── [C5] BANDAR DETECTION — Threshold 1.8x → 2.5x ───
+# ── [C5] BANDAR DETECTION — Threshold 1.8x → 2.5x ───
 def bandar_detection(df: pd.DataFrame) -> int:
     close = df["Close"].squeeze()
     volume = df["Volume"].squeeze()
@@ -329,7 +329,7 @@ def bandar_detection(df: pd.DataFrame) -> int:
     if distribution: score -= 2
     return score
 
-# ─── [C3] MULTI-TIMEFRAME BREAKOUT ──
+# ── [C3] MULTI-TIMEFRAME BREAKOUT ──
 def breakout_confirmation(df: pd.DataFrame) -> str:
     close = df["Close"].squeeze()
     high = df["High"].squeeze()
@@ -580,7 +580,7 @@ if "intraday_info" not in st.session_state: st.session_state.intraday_info = {}
 
 TOP_N_RESULTS = 5
 
-# IMPORTS
+# IMPORTS ENGINE (dengan fallback)
 try:
     from engine.probability_engine import runner_probability
     from engine.runner_engine import runner_prediction
@@ -590,9 +590,11 @@ try:
     from engine.regime_engine import detect_market_regime
     from config.universe import ISSI_UNIVERSE, SECTOR_MAP, get_sector
 except ImportError:
-    ISSI_UNIVERSE = {"BBRI.JK", "BBNI.JK", "BMRI.JK"}
-    SECTOR_MAP = {}
-    def get_sector(ticker): return "Unknown"
+    # Fallback implementations jika module tidak ada
+    ISSI_UNIVERSE = {"BBRI.JK", "BBNI.JK", "BMRI.JK", "TLKM.JK", "ASII.JK"}
+    SECTOR_MAP = {"BBRI.JK": "Finance", "BBNI.JK": "Finance", "BMRI.JK": "Finance", "TLKM.JK": "Infrastructure", "ASII.JK": "Miscellaneous Industry"}
+    def get_sector(ticker): 
+        return SECTOR_MAP.get(ticker, "Unknown")
     def runner_probability(df): return 50
     def runner_prediction(df): return 50
     def pullback_quality(df): return "HEALTHY"
@@ -641,7 +643,7 @@ def load_market() -> dict:
     return market
 
 # UI SETUP
-st.set_page_config(layout="wide", page_title="ATS SuperEngine V6.0", page_icon="")
+st.set_page_config(layout="wide", page_title="ATS SuperEngine V6.0", page_icon="📊")
 
 # BMW M4 THEME CSS
 st.markdown("""
@@ -714,7 +716,7 @@ header_html = f'''
 st.markdown(header_html, unsafe_allow_html=True)
 
 # TABS (SEMUA 9 TAB UTUH)
-tabs = st.tabs(["📖 HOW TO USE", "📊 TRADING DESK", "💼 ACCOUNT", "📋 REPORT", "🕌 ISSI CHECK", "🎯 BANDAR HUNTER", "🚀 BREAKOUT SCAN", "🗂️ STOCKBIT TRACKER", "📚 WISDOM"])
+tabs = st.tabs(["📖 HOW TO USE", "📊 TRADING DESK", "💼 ACCOUNT", "📋 REPORT", "🕌 ISSI CHECK", "🎯 BANDAR HUNTER", "🚀 BREAKOUT SCAN", "🗂️ STOCKBIT TRACKER", " WISDOM"])
 
 # TAB 0: HOW TO USE
 with tabs[0]:
@@ -722,11 +724,11 @@ with tabs[0]:
     st.info("ATS (Automated Trading Scanner) memindai saham syariah ISSI secara otomatis dan mengirim notifikasi ke Telegram.")
     st.markdown("### ⏰ Jadwal Auto-Scan")
     st.markdown("**09:05** | **09:30** | **11:30** | **13:35** | **15:00** WIB")
-    st.markdown("### 📊 Arti Sinyal")
+    st.markdown("###  Arti Sinyal")
     c1, c2, c3 = st.columns(3)
     c1.error("🔥 **EXECUTE NOW** - Sinyal terkuat")
     c2.warning("✅ **EXECUTE** - Sinyal kuat")
-    c3.info(" **READY** - Pantau dulu")
+    c3.info("⏳ **READY** - Pantau dulu")
 
 # TAB 1: TRADING DESK
 with tabs[1]:
@@ -735,7 +737,16 @@ with tabs[1]:
             try:
                 market = load_market()
                 balance = st.session_state.get("balance", 800000)
-                st.session_state.scan_result = pd.DataFrame({"Ticker": ["TEST"], "Score": [75], "RR": [2.0], "Entry": ["1000"], "SL": ["950"], "Target": ["1100"], "Action": ["READY"]})
+                # Placeholder result untuk demo
+                st.session_state.scan_result = pd.DataFrame({
+                    "Ticker": ["TEST"], 
+                    "Score": [75], 
+                    "RR": [2.0], 
+                    "Entry": ["1000"], 
+                    "SL": ["950"], 
+                    "Target": ["1100"], 
+                    "Action": ["READY"]
+                })
                 st.success("✅ Scan selesai!")
             except Exception as e:
                 st.error(f"❌ Error: {e}")
@@ -743,7 +754,7 @@ with tabs[1]:
     if st.session_state.scan_result is not None and not st.session_state.scan_result.empty:
         st.dataframe(st.session_state.scan_result, use_container_width=True)
     elif st.session_state.scan_result is not None:
-        st.warning("⚠️ Tidak ada kandidat hari ini")
+        st.warning("️ Tidak ada kandidat hari ini")
 
 # TAB 2: ACCOUNT
 with tabs[2]:
