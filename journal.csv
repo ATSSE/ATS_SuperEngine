@@ -1,4 +1,33 @@
-Ticker,Entry,SL,Target,RR,Lot,Time,Breakout,BandarScore,BUY,Sector,Probability,RunnerScore,PullbackQuality,Liquidity,PullbackZone,Momentum,Accumulation,Score,Status,EntryTime,Date,Timing,INTRA,FT,Decision
-SIMP,635.0,609.0,698.0,2.5,6.0,,WEAK,2.0,True,Plantation,20.0,60.0,STRONG,🟢 OK,599 - 603,1.0,2.0,92.0,OPEN,2026-03-31 10:13:48.039003,2026-03-31,,,,
-LSIP,1.55,1.488,1.705,2.5,2.0,,VALID,4.0,True,Plantation,85.0,80.0,STRONG,🟢 OK,1.390 - 1.461,2.0,2.0,173.0,OPEN,2026-04-14 09:09:01.306766,2026-04-14,🔥 EXECUTE NOW,0.0,2.0,🔥 EXECUTE NOW
-LPPF,1.95,1.872,2.145,2.5,2.0,,VALID,4.0,True,Consumer,85.0,50.0,STRONG,🟢 OK,1.847 - 1.851,2.0,3.0,168.0,OPEN,2026-04-14 09:09:10.781956,2026-04-14,🔥 EXECUTE NOW,0.0,2.0,🔥 EXECUTE NOW
+Ticker,Entry,SL,Target,RR,Lot,Time,Breakout,BandarScore,BUY,Sector,Probability,RunnerScore,PullbackQuality,Liquidity,PullbackZone,Momentum,Accumulation,Score,Status,EntryTime,Date,Timing,INTRA,FT,Decision,Exit,PnL,Notes
+SIMP,635.0,609.0,698.0,2.5,6.0,,WEAK,2.0,True,Plantation,20.0,60.0,STRONG,🟢 OK,599 - 603,1.0,2.0,92.0,OPEN,2026-03-31 10:13:48.039003,2026-03-31,,,,,,,
+LSIP,1.55,1.488,1.705,2.5,2.0,,VALID,4.0,True,Plantation,85.0,80.0,STRONG,🟢 OK,1.390 - 1.461,2.0,2.0,173.0,OPEN,2026-04-14 09:09:01.306766,2026-04-14,🔥 EXECUTE NOW,0.0,2.0,🔥 EXECUTE NOW,,,
+LPPF,1.95,1.872,2.145,2.5,2.0,,VALID,4.0,True,Consumer,85.0,50.0,STRONG,🟢 OK,1.847 - 1.851,2.0,3.0,168.0,OPEN,2026-04-14 09:09:10.781956,2026-04-14,🔥 EXECUTE NOW,0.0,2.0,🔥 EXECUTE NOW,,,
+MIKA,171000.0,,,,1690.0,,,,,,,,,,,,,,,,2026-05-26,,,,,,,Import IPOT | Buy 1710lot @ avg171000 | Sell 1690lot @ avg169000
+PGAS,181223.0,,,,3475.0,,,,,,,,,,,,,,,,2026-05-26,,,,,,,Import IPOT | Buy 3615lot @ avg181223 | Sell 3475lot @ avg174760
+AKRA,127540.0,,,,3695.0,,,,,,,,,,,,,,,,2026-05-29,,,,,,,Import IPOT | Buy 5100lot @ avg127540 | Sell 3695lot @ avg123243
+HRTA,246000.0,,,,2040.0,,,,,,,,,,,,,,,,2026-05-29,,,,,,,Import IPOT | Buy 2460lot @ avg246000 | Sell 2040lot @ avg204000
+MEDC,124755.0,,,,2485.0,,,,,,,,,,,,,,,,2026-05-29,,,,,,,Import IPOT | Buy 2495lot @ avg124755 | Sell 2485lot @ avg124311
+ANTM,296401.0,,,,8550.0,,,,,,,,,,,,,,,,2026-06-02,,,,,,,Import IPOT | Buy 14790lot @ avg296401 | Sell 8550lot @ avg285816
+MDKA,257509.0,,,,5090.0,,,,,,,,,,,,,,,,2026-06-02,,,,,,,Import IPOT | Buy 5150lot @ avg257509 | Sell 5090lot @ avg254855
+STTP,100.0,,,,1.0,,,,,,,,,,,,,,,,2026-06-02,,,,,100.0,0.0,Import IPOT | Buy 1lot @ avg100 | Sell 9575lot @ avg100
+MPOW,11900.0,,,,113.0,,,,,,,,,,,,,,,,2026-06-04,,,,,,,Import IPOT | Buy 119lot @ avg11900 | Sell 113lot @ avg11300
+MSIN,50500.0,,,,490.0,,,,,,,,,,,,,,,,2026-06-04,,,,,,,Import IPOT | Buy 505lot @ avg50500 | Sell 490lot @ avg49000
+TINS,320343.0,,,,6450.0,,,,,,,,,,,,,,,,2026-06-04,,,,,,,Import IPOT | Buy 9560lot @ avg320343 | Sell 6450lot @ avg324212
+ADMR,142000.0,,,,1350.0,,,,,,,,,,,,,,,,2026-06-05,,,,,,,Import IPOT | Buy 1420lot @ avg142000 | Sell 1350lot @ avg135000
+ACES,32200.0,,,,322.0,,,,,,,,,,,,,,,,2026-06-09,,,,,33800.0,51520000.0,Import IPOT | Buy 322lot @ avg32200 | Sell 338lot @ avg33800
+PTBA,260000.0,,,,2600.0,,,,,,,,,,,,,,,,2026-06-09,,,,,265000.0,1300000000.0,Import IPOT | Buy 2600lot @ avg260000 | Sell 2650lot @ avg265000
+HRUM,73003.0,,,,705.0,,,,,,,,,,,,,,,,2026-06-10,,,,,,,Import IPOT | Buy 1460lot @ avg73003 | Sell 705lot @ avg70500
+SIMP,52879.0,,,,1105.0,,,,,,,,,,,,,,,,2026-06-10,,,,,,,Import IPOT | Buy 1585lot @ avg52879 | Sell 1105lot @ avg55251
+BRIS,184284.0,,,,3795.0,,,,,,,,,,,,,,,,2026-06-11,,,,,,,Import IPOT | Buy 5525lot @ avg184284 | Sell 3795lot @ avg189806
+CLEO,37381.0,,,,1120.0,,,,,,,,,,,,,,,,2026-06-11,,,,,37862.0,53872000.0,Import IPOT | Buy 1120lot @ avg37381 | Sell 1514lot @ avg37862
+AUTO,240000.0,,,,2400.0,,,,,,,,,,,,,,,,2026-06-12,,,,,246673.0,1601520000.0,Import IPOT | Buy 2400lot @ avg240000 | Sell 7400lot @ avg246673
+SIDO,38000.0,,,,380.0,,,,,,,,,,,,,,,,2026-06-15,,,,,37452.0,-20824000.0,Import IPOT | Buy 380lot @ avg38000 | Sell 748lot @ avg37452
+INKP,251.0,,,,7800.0,,,,,,,,,,,,,,,,2026-06-15,,,,,,,Import IPOT | Buy 15300lot @ avg251 | Sell 7800lot @ avg300
+TLKM,300000.0,,,,2540.0,,,,,,,,,,,,,,,,2026-06-17,,,,,,,Import IPOT | Buy 3000lot @ avg300000 | Sell 2540lot @ avg254000
+BIRD,162500.0,,,,1625.0,,,,,,,,,,,,,,,,2026-06-18,,,,,164000.0,243750000.0,Import IPOT | Buy 1625lot @ avg162500 | Sell 1640lot @ avg164000
+MBMA,55278.0,,,,530.0,,,,,,,,,,,,,,,,2026-06-19,,,,,,,Import IPOT | Buy 1105lot @ avg55278 | Sell 530lot @ avg53000
+SMRA,29600.0,,,,288.0,,,,,,,,,,,,,,,,2026-06-23,,,,,,,Import IPOT | Buy 296lot @ avg29600 | Sell 288lot @ avg28800
+KLBF,25483.0,,,,1570.0,,,,,,,,,,,,,,,,2026-06-24,,,,,,,Import IPOT | Buy 2330lot @ avg25483 | Sell 1570lot @ avg78513
+JSMR,297501.0,,,,3050.0,,,,,,,,,,,,,,,,2026-06-25,,,,,,,Import IPOT | Buy 5950lot @ avg297501 | Sell 3050lot @ avg305000
+TPIA,182250.0,,,,1855.0,,,,,,,,,,,,,,,,2026-06-25,,,,,,,Import IPOT | Buy 3645lot @ avg182250 | Sell 1855lot @ avg185500
+UNVR,177500.0,,,,1775.0,,,,,,,,,,,,,,,,2026-06-30,,,,,182000.0,798750000.0,Import IPOT | Buy 1775lot @ avg177500 | Sell 1820lot @ avg182000

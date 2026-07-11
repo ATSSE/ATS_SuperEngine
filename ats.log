@@ -10,3 +10,5 @@
 2026-05-02 18:10:59 | INFO    | load_market START: 98 ticker dalam 4 batch
 2026-05-02 18:11:17 | INFO    | load_market DONE: 92 ticker loaded, 4 gagal
 2026-05-02 18:11:17 | WARNING | Ticker gagal fetch: BPAM.JK, ICHI.JK, WSKT.JK, WIKA.JK
+2026-07-11 16:42:57 | WARNING | Telegram tidak terkirim: TOKEN atau CHAT belum di-set
+2026-07-11 17:31:06 | WARNING | Telegram tidak terkirim: TOKEN atau CHAT belum di-set
