@@ -5587,6 +5587,25 @@ with tabs[2]:
         sign = "-" if n < 0 else ""
         return f"{sign}Rp. {s}"
 
+    def fmt_idr_col(df, cols):
+        """Format kolom angka ke string IDR standar Indonesia untuk ditampilkan di tabel."""
+        df = df.copy()
+        for col in cols:
+            if col in df.columns:
+                def _fmt(v):
+                    if v is None or (isinstance(v, float) and np.isnan(v)):
+                        return "—"
+                    try:
+                        n = float(v)
+                        abs_n = abs(n)
+                        s = f"{abs_n:,.0f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                        sign = "-" if n < 0 else ""
+                        return f"{sign}Rp. {s}"
+                    except Exception:
+                        return str(v)
+                df[col] = df[col].apply(_fmt)
+        return df
+
     # Load data saat pertama kali
     if "inv_loaded" not in st.session_state:
         inv_load()
@@ -5689,13 +5708,13 @@ with tabs[2]:
                 })
             df_trades = pd.DataFrame(rows)
 
+            df_trades_show = fmt_idr_col(df_trades, ["PnL"])
             st.dataframe(
-                df_trades,
+                df_trades_show,
                 use_container_width=True,
                 hide_index=True,
                 column_config={
-                    "PnL":  st.column_config.NumberColumn("PnL (Rp)", format="%.0f"),
-                    "PnL%": st.column_config.NumberColumn("PnL %",    format="%.2f%%"),
+                    "PnL%": st.column_config.NumberColumn("PnL %", format="%.2f%%"),
                 }
             )
 
@@ -6070,16 +6089,8 @@ with tabs[2]:
 
                     if ticker_pnl:
                         df_pnl = pd.DataFrame(ticker_pnl).sort_values("PnL (Rp)", ascending=False)
-                        st.dataframe(
-                            df_pnl,
-                            use_container_width=True,
-                            hide_index=True,
-                            column_config={
-                                "Total Beli": st.column_config.NumberColumn(format="Rp %.0f"),
-                                "Total Jual": st.column_config.NumberColumn(format="Rp %.0f"),
-                                "PnL (Rp)":  st.column_config.NumberColumn(format="Rp %.0f"),
-                            }
-                        )
+                        df_pnl_show = fmt_idr_col(df_pnl, ["Total Beli", "Total Jual", "PnL (Rp)"])
+                        st.dataframe(df_pnl_show, use_container_width=True, hide_index=True)
 
                     st.markdown("---")
 
@@ -6096,12 +6107,8 @@ with tabs[2]:
                     ]].copy()
                     df_detail.columns = ["Tanggal","Keterangan","Kategori","Ticker","Harga","Volume","Amount","Saldo"]
 
-                    st.dataframe(df_detail, use_container_width=True, hide_index=True,
-                        column_config={
-                            "Amount": st.column_config.NumberColumn(format="Rp %.0f"),
-                            "Saldo":  st.column_config.NumberColumn(format="Rp %.0f"),
-                        }
-                    )
+                    df_detail_show = fmt_idr_col(df_detail, ["Amount", "Saldo"])
+                    st.dataframe(df_detail_show, use_container_width=True, hide_index=True)
 
                     # Download
                     csv_exp = df_detail.to_csv(index=False).encode()
@@ -6263,7 +6270,7 @@ with tabs[3]:
     edited_journal = st.data_editor(
         st.session_state.journal, num_rows="dynamic",
         use_container_width=True, hide_index=True,
-        column_config={"PnL": st.column_config.NumberColumn("PnL (Rp)", format="%.0f")})
+        column_config={"PnL": st.column_config.NumberColumn("PnL (Rp)", format="Rp. %.0f")})
 
     if st.button("💾 Save Journal"):
         st.session_state.journal = edited_journal.reset_index(drop=True)
