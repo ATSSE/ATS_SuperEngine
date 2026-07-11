@@ -5660,7 +5660,7 @@ with tabs[2]:
 
     # ── INPUT TRADE ───────────────────────────────────────────
     acc_tab1, acc_tab2, acc_tab3, acc_tab4, acc_tab5 = st.tabs(
-        ["📋 Trade Log", "➕ Input Trade", "📥 Import IPOT", "💰 Modal & Mutasi", "🧠 Cybernetic"]
+        ["📋 Trade Log", "➕ Input Trade", "📥 Import IPOT", "⚖️ Risk Management", "🧠 Cybernetic"]
     )
 
     with acc_tab1:
@@ -6120,61 +6120,62 @@ with tabs[2]:
                         st.success("Data mutasi dihapus")
                         st.rerun()
     with acc_tab4:
-        st.subheader("💰 Modal & Rekonsiliasi")
+        st.subheader("⚖️ Risk Management")
+        st.caption("Setting parameter risk management. Modal otomatis dari data mutasi IPOT, atau bisa di-override manual.")
 
-        col_m1, col_m2 = st.columns(2)
-        with col_m1:
-            new_modal = st.number_input(
-                "Modal Awal (Rp)",
-                min_value=100_000, step=100_000,
-                value=int(st.session_state.inv_modal),
-                key="inv_modal_input"
-            )
-            if st.button("💾 Update Modal"):
-                st.session_state.inv_modal  = int(new_modal)
-                st.session_state.balance    = int(new_modal)
-                save_state()
-                inv_save()
-                st.success("✅ Modal diperbarui")
-                st.rerun()
-
-        with col_m2:
-            st.markdown("**Risk Management**")
-            bal = st.session_state.inv_modal
-            st.metric("Risk/Trade (2%)",    inv_fmt_idr(bal * 0.02))
-            st.metric("Max 5 Posisi (40%)", inv_fmt_idr(bal * 0.40))
-            st.metric("Safe Cash (60%)",    inv_fmt_idr(bal * 0.60))
+        # Ambil modal dari mutasi IPOT kalau ada, fallback ke manual
+        _all_m = st.session_state.get("inv_mutasi_raw", [])
+        if _all_m:
+            _setor_rm = sum(float(r.get("amount",0) or 0) for r in _all_m if r.get("category") == "SETOR")
+            _tarik_rm = abs(sum(float(r.get("amount",0) or 0) for r in _all_m if r.get("category") == "TARIK"))
+            _modal_ipot = _setor_rm - _tarik_rm
+        else:
+            _modal_ipot = 0
 
         st.markdown("---")
-        st.subheader("📊 Rekonsiliasi")
-        rk1, rk2, rk3 = st.columns(3)
-        setor  = sum(m.get("jumlah", 0) for m in st.session_state.inv_mutasi if m.get("tipe") == "SETOR")
-        tarik  = sum(m.get("jumlah", 0) for m in st.session_state.inv_mutasi if m.get("tipe") == "TARIK")
-        biaya  = sum(m.get("jumlah", 0) for m in st.session_state.inv_mutasi if m.get("tipe") == "BIAYA")
-        rk1.metric("Total Setor",  inv_fmt_idr(setor))
-        rk2.metric("Total Tarik",  inv_fmt_idr(tarik))
-        rk3.metric("Total Biaya",  inv_fmt_idr(biaya))
+        rm1, rm2 = st.columns(2)
 
-        st.markdown("---")
-        st.subheader("➕ Input Mutasi")
-        with st.form("inv_mutasi_form", clear_on_submit=True):
-            mc1, mc2, mc3 = st.columns(3)
-            with mc1:
-                m_tipe    = st.selectbox("Tipe", ["SETOR", "TARIK", "BIAYA"])
-            with mc2:
-                m_jumlah  = st.number_input("Jumlah (Rp)", min_value=0, step=10000)
-            with mc3:
-                m_ket     = st.text_input("Keterangan", placeholder="Setoran awal, komisi, dll")
-            if st.form_submit_button("Simpan Mutasi"):
-                st.session_state.inv_mutasi.append({
-                    "tipe":       m_tipe,
-                    "jumlah":     m_jumlah,
-                    "keterangan": m_ket,
-                    "date":       str(datetime.now(WIB).date()),
-                })
-                inv_save()
-                st.success("✅ Mutasi tersimpan")
-                st.rerun()
+        with rm1:
+            st.markdown("**⚙️ Setting Manual**")
+            # Risk per trade
+            risk_pct = st.slider("Risk per Trade (%)", min_value=1, max_value=10, value=2, step=1, key="rm_risk_pct")
+            # Max posisi
+            max_pos_pct = st.slider("Max Total Posisi (%)", min_value=10, max_value=80, value=40, step=5, key="rm_max_pos")
+            # Safe cash
+            safe_cash_pct = 100 - max_pos_pct
+            # Override modal
+            use_manual_modal = st.checkbox("Override Modal Manual", value=False, key="rm_use_manual")
+            if use_manual_modal:
+                modal_rm = st.number_input("Modal Manual (Rp)", min_value=100_000, step=100_000,
+                                           value=int(st.session_state.inv_modal), key="rm_modal_input")
+                if st.button("💾 Simpan Modal", key="rm_save_modal"):
+                    st.session_state.inv_modal = int(modal_rm)
+                    st.session_state.balance   = int(modal_rm)
+                    save_state()
+                    inv_save()
+                    st.success("✅ Modal manual tersimpan")
+                    st.rerun()
+            else:
+                modal_rm = _modal_ipot if _modal_ipot > 0 else st.session_state.inv_modal
+
+        with rm2:
+            st.markdown("**📊 Hasil Kalkulasi**")
+            st.metric("Modal Aktif",        inv_fmt_idr(modal_rm),
+                      delta="Dari IPOT" if (_modal_ipot > 0 and not use_manual_modal) else "Manual")
+            st.metric(f"Risk/Trade ({risk_pct}%)",     inv_fmt_idr(modal_rm * risk_pct / 100))
+            st.metric(f"Max Posisi ({max_pos_pct}%)",  inv_fmt_idr(modal_rm * max_pos_pct / 100))
+            st.metric(f"Safe Cash ({safe_cash_pct}%)", inv_fmt_idr(modal_rm * safe_cash_pct / 100))
+
+            # Max lot per saham berdasarkan harga
+            st.markdown("---")
+            st.markdown("**🎯 Kalkulasi Lot**")
+            harga_saham = st.number_input("Harga Saham (Rp)", min_value=50, step=50,
+                                          value=500, key="rm_harga")
+            budget_per_trade = modal_rm * risk_pct / 100 / 0.02  # asumsi SL 2% dari harga
+            max_lot = int((modal_rm * max_pos_pct / 100 / 5) / (harga_saham * 100))
+            risk_lot = int((modal_rm * risk_pct / 100) / (harga_saham * 0.02 * 100))
+            st.metric("Max Lot (posisi tunggal)", f"{max(max_lot, 1)} lot")
+            st.metric("Lot berdasarkan Risk 2% SL", f"{max(risk_lot, 1)} lot")
 
     with acc_tab5:
         st.subheader("🧠 Cybernetic Parameters")
@@ -6265,21 +6266,10 @@ with tabs[3]:
         use_container_width=True, hide_index=True,
         column_config={"PnL": st.column_config.NumberColumn("PnL (Rp)", format="%.0f")})
 
-    jcol1, jcol2 = st.columns([1, 1])
-    with jcol1:
-        if st.button("💾 Save Journal", use_container_width=True):
-            st.session_state.journal = edited_journal.reset_index(drop=True)
-            st.session_state.journal.to_csv(JOURNAL_FILE, index=False)
-            st.success("✅ Journal tersimpan")
-    with jcol2:
-        if st.button("🗑️ Hapus Semua Journal", type="secondary", use_container_width=True):
-            st.session_state.journal = pd.DataFrame(columns=JOURNAL_COLS)
-            st.session_state.journal.to_csv(JOURNAL_FILE, index=False)
-            # Hapus juga inv_trades yang dari import
-            st.session_state.inv_trades = []
-            inv_save()
-            st.success("✅ Semua data journal & trade log dihapus")
-            st.rerun()
+    if st.button("💾 Save Journal"):
+        st.session_state.journal = edited_journal.reset_index(drop=True)
+        st.session_state.journal.to_csv(JOURNAL_FILE, index=False)
+        st.success("✅ Journal tersimpan")
 
     if not edited_journal.empty and "PnL" in edited_journal.columns:
         jdf = edited_journal.dropna(subset=["PnL"])
