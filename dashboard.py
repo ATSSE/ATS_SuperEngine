@@ -5888,19 +5888,36 @@ with tabs[2]:
                                 line = line.strip()
                                 if not line: continue
                                 if "Trx Date" in line or "TrxDate" in line: continue
+                                if "===" in line or "---" in line: continue
 
-                                cols = line.split("\t")
+                                # Support dua format:
+                                # 1. Tab-separated (copy dari web langsung)
+                                # 2. Space-separated dengan 2+ spasi (copy dari Qwen/rapi)
+                                if "\t" in line:
+                                    cols = line.split("\t")
+                                else:
+                                    import re as _re
+                                    cols = _re.split(r'\s{2,}', line)
+
                                 if len(cols) < 6: continue
 
                                 trx_date = parse_dt(cols[0])
                                 due_date  = parse_dt(cols[1]) if len(cols) > 1 else ""
                                 trx_desc  = cols[2].strip() if len(cols) > 2 else ""
-                                price     = clean_num(cols[3]) if len(cols) > 3 else None
-                                volume    = clean_num(cols[4]) if len(cols) > 4 else None
-                                amount    = clean_num(cols[5]) if len(cols) > 5 else None
-                                balance   = clean_num(cols[6]) if len(cols) > 6 else None
-                                days      = clean_num(cols[7]) if len(cols) > 7 else None
-                                penalty   = clean_num(cols[8]) if len(cols) > 8 else None
+
+                                # "-" berarti kolom kosong (Deviden, Penarikan, dll)
+                                def get_col(idx):
+                                    if len(cols) <= idx: return None
+                                    v = cols[idx].strip()
+                                    if v in ("-", "", "—"): return None
+                                    return clean_num(v)
+
+                                price   = get_col(3)
+                                volume  = get_col(4)
+                                amount  = get_col(5)
+                                balance = get_col(6)
+                                days    = get_col(7)
+                                penalty = get_col(8)
 
                                 cat, ticker = categorize(trx_desc)
 
@@ -6021,53 +6038,29 @@ with tabs[2]:
                         rows = df_m[df_m["category"] == cat]["amount"]
                         return rows.sum() if not rows.empty else 0
 
-                    # Penalty dari kolom penalty (bukan amount)
-                    def sum_penalty():
-                        if "penalty" in df_m.columns:
-                            rows = df_m["penalty"].dropna()
-                            return abs(rows[rows != 0].sum()) if not rows.empty else 0
-                        return 0
-
                     total_beli    = abs(sum_amt("BUY"))
                     total_jual    = sum_amt("SELL")
                     total_dividen = sum_amt("DIVIDEN")
                     total_tarik   = abs(sum_amt("TARIK"))
                     total_setor   = sum_amt("SETOR")
                     total_biaya   = abs(sum_amt("BIAYA"))
-                    total_penalty = sum_penalty()
                     trading_pnl   = total_jual - total_beli
-                    # Saldo akhir dari kolom balance baris terakhir
                     saldo_akhir   = df_m["balance"].dropna().iloc[-1] if not df_m["balance"].dropna().empty else 0
-                    # Net cash flow: masuk - keluar - penalty
-                    net_cashflow  = total_setor + total_dividen - total_tarik - total_biaya - total_penalty
 
-                    # KPI Row 1: Kas
+                    # KPI
                     st.markdown("### 💰 Ringkasan Keuangan")
                     r1c1, r1c2, r1c3, r1c4 = st.columns(4)
-                    r1c1.metric("Total Setor",    inv_fmt_idr(total_setor))
-                    r1c2.metric("Total Tarik",    inv_fmt_idr(total_tarik))
-                    r1c3.metric("Total Dividen",  inv_fmt_idr(total_dividen))
-                    r1c4.metric("Total Penalty",  inv_fmt_idr(total_penalty),
-                                delta=f"-{inv_fmt_idr(total_penalty)}" if total_penalty > 0 else None,
-                                delta_color="inverse")
+                    r1c1.metric("Total Setor",   inv_fmt_idr(total_setor))
+                    r1c2.metric("Total Tarik",   inv_fmt_idr(total_tarik))
+                    r1c3.metric("Total Dividen", inv_fmt_idr(total_dividen))
+                    r1c4.metric("Total Biaya",   inv_fmt_idr(total_biaya))
 
-                    # KPI Row 2: Trading
                     r2c1, r2c2, r2c3, r2c4 = st.columns(4)
                     r2c1.metric("Total Pembelian", inv_fmt_idr(total_beli))
                     r2c2.metric("Total Penjualan", inv_fmt_idr(total_jual))
                     r2c3.metric("Trading PnL",     inv_fmt_idr(trading_pnl),
                                 delta_color="normal")
-                    r2c4.metric("Total Biaya",     inv_fmt_idr(total_biaya))
-
-                    # KPI Row 3: Summary
-                    r3c1, r3c2, r3c3, r3c4 = st.columns(4)
-                    r3c1.metric("Saldo Akhir",    inv_fmt_idr(saldo_akhir))
-                    r3c2.metric("Net Cash Flow",  inv_fmt_idr(net_cashflow),
-                                delta_color="normal")
-                    r3c3.metric("Total Transaksi", len(df_m))
-                    r3c4.metric("Periode Data",
-                                f"{df_m['trx_date'].min()} s/d {df_m['trx_date'].max()}"
-                                if "trx_date" in df_m.columns else "—")
+                    r2c4.metric("Saldo Akhir",     inv_fmt_idr(saldo_akhir))
 
                     st.markdown("---")
 
