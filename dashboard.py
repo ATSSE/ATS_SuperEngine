@@ -5582,15 +5582,10 @@ with tabs[2]:
         if n is None or (isinstance(n, float) and np.isnan(n)):
             return "—"
         abs_n = abs(n)
-        if abs_n >= 1e9:
-            s = f"{abs_n/1e6:.0f}Jt"
-        elif abs_n >= 1e6:
-            s = f"{abs_n/1e6:.1f}Jt"
-        elif abs_n >= 1e3:
-            s = f"{abs_n/1e3:.0f}rb"
-        else:
-            s = f"{abs_n:,.0f}"
-        return ("" if n >= 0 else "-") + "Rp " + s
+        s = f"{abs_n:,.0f}"
+        s = s.replace(",", "X").replace(".", ",").replace("X", ".")
+        sign = "-" if n < 0 else ""
+        return f"{sign}Rp. {s}"
 
     # Load data saat pertama kali
     if "inv_loaded" not in st.session_state:
