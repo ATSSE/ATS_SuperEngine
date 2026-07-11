@@ -5587,25 +5587,6 @@ with tabs[2]:
         sign = "-" if n < 0 else ""
         return f"{sign}Rp. {s}"
 
-    def fmt_idr_col(df, cols):
-        """Format kolom angka ke string IDR standar Indonesia untuk ditampilkan di tabel."""
-        df = df.copy()
-        for col in cols:
-            if col in df.columns:
-                def _fmt(v):
-                    if v is None or (isinstance(v, float) and np.isnan(v)):
-                        return "—"
-                    try:
-                        n = float(v)
-                        abs_n = abs(n)
-                        s = f"{abs_n:,.0f}".replace(",", "X").replace(".", ",").replace("X", ".")
-                        sign = "-" if n < 0 else ""
-                        return f"{sign}Rp. {s}"
-                    except Exception:
-                        return str(v)
-                df[col] = df[col].apply(_fmt)
-        return df
-
     # Load data saat pertama kali
     if "inv_loaded" not in st.session_state:
         inv_load()
@@ -5708,13 +5689,13 @@ with tabs[2]:
                 })
             df_trades = pd.DataFrame(rows)
 
-            df_trades_show = fmt_idr_col(df_trades, ["PnL"])
             st.dataframe(
-                df_trades_show,
+                df_trades,
                 use_container_width=True,
                 hide_index=True,
                 column_config={
-                    "PnL%": st.column_config.NumberColumn("PnL %", format="%.2f%%"),
+                    "PnL":  st.column_config.NumberColumn("PnL (Rp)", format="%.0f"),
+                    "PnL%": st.column_config.NumberColumn("PnL %",    format="%.2f%%"),
                 }
             )
 
@@ -6040,29 +6021,53 @@ with tabs[2]:
                         rows = df_m[df_m["category"] == cat]["amount"]
                         return rows.sum() if not rows.empty else 0
 
+                    # Penalty dari kolom penalty (bukan amount)
+                    def sum_penalty():
+                        if "penalty" in df_m.columns:
+                            rows = df_m["penalty"].dropna()
+                            return abs(rows[rows != 0].sum()) if not rows.empty else 0
+                        return 0
+
                     total_beli    = abs(sum_amt("BUY"))
                     total_jual    = sum_amt("SELL")
                     total_dividen = sum_amt("DIVIDEN")
                     total_tarik   = abs(sum_amt("TARIK"))
                     total_setor   = sum_amt("SETOR")
                     total_biaya   = abs(sum_amt("BIAYA"))
+                    total_penalty = sum_penalty()
                     trading_pnl   = total_jual - total_beli
+                    # Saldo akhir dari kolom balance baris terakhir
                     saldo_akhir   = df_m["balance"].dropna().iloc[-1] if not df_m["balance"].dropna().empty else 0
+                    # Net cash flow: masuk - keluar - penalty
+                    net_cashflow  = total_setor + total_dividen - total_tarik - total_biaya - total_penalty
 
-                    # KPI
+                    # KPI Row 1: Kas
                     st.markdown("### 💰 Ringkasan Keuangan")
                     r1c1, r1c2, r1c3, r1c4 = st.columns(4)
-                    r1c1.metric("Total Setor",   inv_fmt_idr(total_setor))
-                    r1c2.metric("Total Tarik",   inv_fmt_idr(total_tarik))
-                    r1c3.metric("Total Dividen", inv_fmt_idr(total_dividen))
-                    r1c4.metric("Total Biaya",   inv_fmt_idr(total_biaya))
+                    r1c1.metric("Total Setor",    inv_fmt_idr(total_setor))
+                    r1c2.metric("Total Tarik",    inv_fmt_idr(total_tarik))
+                    r1c3.metric("Total Dividen",  inv_fmt_idr(total_dividen))
+                    r1c4.metric("Total Penalty",  inv_fmt_idr(total_penalty),
+                                delta=f"-{inv_fmt_idr(total_penalty)}" if total_penalty > 0 else None,
+                                delta_color="inverse")
 
+                    # KPI Row 2: Trading
                     r2c1, r2c2, r2c3, r2c4 = st.columns(4)
                     r2c1.metric("Total Pembelian", inv_fmt_idr(total_beli))
                     r2c2.metric("Total Penjualan", inv_fmt_idr(total_jual))
                     r2c3.metric("Trading PnL",     inv_fmt_idr(trading_pnl),
                                 delta_color="normal")
-                    r2c4.metric("Saldo Akhir",     inv_fmt_idr(saldo_akhir))
+                    r2c4.metric("Total Biaya",     inv_fmt_idr(total_biaya))
+
+                    # KPI Row 3: Summary
+                    r3c1, r3c2, r3c3, r3c4 = st.columns(4)
+                    r3c1.metric("Saldo Akhir",    inv_fmt_idr(saldo_akhir))
+                    r3c2.metric("Net Cash Flow",  inv_fmt_idr(net_cashflow),
+                                delta_color="normal")
+                    r3c3.metric("Total Transaksi", len(df_m))
+                    r3c4.metric("Periode Data",
+                                f"{df_m['trx_date'].min()} s/d {df_m['trx_date'].max()}"
+                                if "trx_date" in df_m.columns else "—")
 
                     st.markdown("---")
 
@@ -6089,8 +6094,16 @@ with tabs[2]:
 
                     if ticker_pnl:
                         df_pnl = pd.DataFrame(ticker_pnl).sort_values("PnL (Rp)", ascending=False)
-                        df_pnl_show = fmt_idr_col(df_pnl, ["Total Beli", "Total Jual", "PnL (Rp)"])
-                        st.dataframe(df_pnl_show, use_container_width=True, hide_index=True)
+                        st.dataframe(
+                            df_pnl,
+                            use_container_width=True,
+                            hide_index=True,
+                            column_config={
+                                "Total Beli": st.column_config.NumberColumn(format="Rp %.0f"),
+                                "Total Jual": st.column_config.NumberColumn(format="Rp %.0f"),
+                                "PnL (Rp)":  st.column_config.NumberColumn(format="Rp %.0f"),
+                            }
+                        )
 
                     st.markdown("---")
 
@@ -6107,8 +6120,12 @@ with tabs[2]:
                     ]].copy()
                     df_detail.columns = ["Tanggal","Keterangan","Kategori","Ticker","Harga","Volume","Amount","Saldo"]
 
-                    df_detail_show = fmt_idr_col(df_detail, ["Amount", "Saldo"])
-                    st.dataframe(df_detail_show, use_container_width=True, hide_index=True)
+                    st.dataframe(df_detail, use_container_width=True, hide_index=True,
+                        column_config={
+                            "Amount": st.column_config.NumberColumn(format="Rp %.0f"),
+                            "Saldo":  st.column_config.NumberColumn(format="Rp %.0f"),
+                        }
+                    )
 
                     # Download
                     csv_exp = df_detail.to_csv(index=False).encode()
@@ -6270,7 +6287,7 @@ with tabs[3]:
     edited_journal = st.data_editor(
         st.session_state.journal, num_rows="dynamic",
         use_container_width=True, hide_index=True,
-        column_config={"PnL": st.column_config.NumberColumn("PnL (Rp)", format="Rp. %.0f")})
+        column_config={"PnL": st.column_config.NumberColumn("PnL (Rp)", format="%.0f")})
 
     if st.button("💾 Save Journal"):
         st.session_state.journal = edited_journal.reset_index(drop=True)
