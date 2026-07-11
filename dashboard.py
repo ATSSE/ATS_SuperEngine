@@ -5594,30 +5594,65 @@ with tabs[2]:
 
     trades = st.session_state.inv_trades
 
-    # ── KPI STRIP ─────────────────────────────────────────────
+    # ── KPI STRIP — sumber data dari mutasi IPOT ──────────────
+    # Load data mutasi untuk KPI
+    import json as _json_kpi
+    _mutasi_file = "investor_mutasi.json"
+    _all_mutasi  = st.session_state.get("inv_mutasi_raw", [])
+    if not _all_mutasi and os.path.exists(_mutasi_file):
+        try:
+            with open(_mutasi_file) as _f:
+                _all_mutasi = _json_kpi.load(_f)
+            st.session_state.inv_mutasi_raw = _all_mutasi
+        except Exception:
+            _all_mutasi = []
+
+    def _sum_mutasi(cat, field="amount"):
+        rows = [r.get(field) for r in _all_mutasi
+                if r.get("category") == cat and r.get(field) is not None]
+        return sum(float(v) for v in rows if v is not None)
+
+    # KPI dari mutasi IPOT
+    if _all_mutasi:
+        _modal      = _sum_mutasi("SETOR") - abs(_sum_mutasi("TARIK"))
+        _trading_pnl = _sum_mutasi("SELL") - abs(_sum_mutasi("BUY"))
+        _dividen    = _sum_mutasi("DIVIDEN")
+        # Saldo akhir dari balance baris terakhir
+        _balances   = [r.get("balance") for r in _all_mutasi if r.get("balance") is not None]
+        _equity     = float(_balances[-1]) if _balances else _modal
+        _pnl_pct    = round(_trading_pnl / _modal * 100, 2) if _modal else 0
+        # Penalty total
+        _penalties  = [r.get("penalty") for r in _all_mutasi if r.get("penalty") is not None]
+        _total_penalty = abs(sum(float(p) for p in _penalties if p))
+    else:
+        # Fallback ke data manual kalau belum ada mutasi
+        _modal      = st.session_state.inv_modal
+        _trading_pnl = sum(inv_calc_pnl(t) or 0 for t in trades if t.get("status") != "OPEN")
+        _dividen    = 0
+        _equity     = _modal + _trading_pnl
+        _pnl_pct    = round(_trading_pnl / _modal * 100, 2) if _modal else 0
+        _total_penalty = 0
+
+    # Win rate tetap dari trade log (IPOT tidak punya SL/TP)
     closed = [t for t in trades if t.get("status") != "OPEN"]
     wins   = [t for t in closed if t.get("status") == "WIN"]
     losses = [t for t in closed if t.get("status") == "LOSS"]
     open_t = [t for t in trades if t.get("status") == "OPEN"]
-
-    total_pnl = sum(inv_calc_pnl(t) or 0 for t in closed)
-    equity    = st.session_state.inv_modal + total_pnl
-    wr        = round(len(wins) / len(closed) * 100) if closed else 0
-    rr_vals   = [inv_calc_rr(t) for t in trades if inv_calc_rr(t)]
-    avg_rr    = round(sum(rr_vals) / len(rr_vals), 1) if rr_vals else 0
-    pnl_pct   = round(total_pnl / st.session_state.inv_modal * 100, 2) if st.session_state.inv_modal else 0
+    wr     = round(len(wins) / len(closed) * 100) if closed else 0
+    rr_vals = [inv_calc_rr(t) for t in trades if inv_calc_rr(t)]
+    avg_rr  = round(sum(rr_vals) / len(rr_vals), 1) if rr_vals else 0
 
     k1, k2, k3, k4, k5, k6 = st.columns(6)
-    k1.metric("Modal",       inv_fmt_idr(st.session_state.inv_modal))
-    k2.metric("Equity",      inv_fmt_idr(equity),
-              delta=f"{pnl_pct:+.2f}%",
+    k1.metric("Modal (Net Setor)",  inv_fmt_idr(_modal))
+    k2.metric("Equity (Saldo)",     inv_fmt_idr(_equity),
+              delta=f"{_pnl_pct:+.2f}%",
               delta_color="normal")
-    k3.metric("Total PnL",   inv_fmt_idr(total_pnl),
+    k3.metric("Trading PnL",        inv_fmt_idr(_trading_pnl),
               delta_color="normal")
-    k4.metric("Win Rate",    f"{wr}%",
+    k4.metric("Dividen",            inv_fmt_idr(_dividen))
+    k5.metric("Win Rate (Log)",     f"{wr}%",
               delta=f"{len(wins)}P / {len(losses)}L")
-    k5.metric("Avg RR",      f"{avg_rr}R")
-    k6.metric("Open",        len(open_t))
+    k6.metric("Avg RR",             f"{avg_rr}R")
 
     st.markdown("---")
 
@@ -5888,49 +5923,19 @@ with tabs[2]:
                                 line = line.strip()
                                 if not line: continue
                                 if "Trx Date" in line or "TrxDate" in line: continue
-                                if line.startswith("=") or line.startswith("-"*5): continue
 
-                                # Support tab-separated dan space-separated (2+ spasi)
-                                import re as _re
-                                if "\t" in line:
-                                    cols = line.split("\t")
-                                else:
-                                    cols = _re.split(r"\s{2,}", line)
-
-                                if len(cols) < 4: continue
+                                cols = line.split("\t")
+                                if len(cols) < 6: continue
 
                                 trx_date = parse_dt(cols[0])
                                 due_date  = parse_dt(cols[1]) if len(cols) > 1 else ""
                                 trx_desc  = cols[2].strip() if len(cols) > 2 else ""
-
-                                # IPOT format:
-                                # 9 kolom: TrxDate DueDate Desc Price Volume Amount Balance Days Penalty
-                                # 7 kolom: TrxDate DueDate Desc Amount Balance Days Penalty (Deviden/Penarikan/Biaya)
-                                # Deteksi: 9 kolom = ada Price & Volume, 7 kolom = tidak ada
-                                if len(cols) >= 9:
-                                    price   = clean_num(cols[3])
-                                    volume  = clean_num(cols[4])
-                                    amount  = clean_num(cols[5])
-                                    balance = clean_num(cols[6])
-                                    days    = clean_num(cols[7])
-                                    penalty = clean_num(cols[8])
-                                elif len(cols) >= 7:
-                                    # 7 kolom - tidak ada price & volume
-                                    price   = None
-                                    volume  = None
-                                    amount  = clean_num(cols[3])
-                                    balance = clean_num(cols[4])
-                                    days    = clean_num(cols[5])
-                                    penalty = clean_num(cols[6])
-                                elif len(cols) >= 6:
-                                    price   = clean_num(cols[3])
-                                    volume  = clean_num(cols[4])
-                                    amount  = clean_num(cols[5])
-                                    balance = None
-                                    days    = None
-                                    penalty = None
-                                else:
-                                    price = volume = amount = balance = days = penalty = None
+                                price     = clean_num(cols[3]) if len(cols) > 3 else None
+                                volume    = clean_num(cols[4]) if len(cols) > 4 else None
+                                amount    = clean_num(cols[5]) if len(cols) > 5 else None
+                                balance   = clean_num(cols[6]) if len(cols) > 6 else None
+                                days      = clean_num(cols[7]) if len(cols) > 7 else None
+                                penalty   = clean_num(cols[8]) if len(cols) > 8 else None
 
                                 cat, ticker = categorize(trx_desc)
 
