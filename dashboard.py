@@ -40,6 +40,11 @@ from collections import defaultdict
 import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+try:
+    import pdfplumber
+    PDF_AVAILABLE = True
+except ImportError:
+    PDF_AVAILABLE = False
 # ============================================================
 # HOTFIX V5.6.9: HARDCODE BYPASS UNTUK BACKGROUND THREAD
 # ============================================================
@@ -126,7 +131,7 @@ _telegram_lock = threading.Lock()
 # ============================================================
 # VERSION HISTORY
 # ============================================================
-APP_VERSION  = "V6.2.0"
+APP_VERSION  = "V6.3.0"
 APP_UPDATED  = "11 Jul 2026"
 
 VERSION_HISTORY = [
@@ -3289,6 +3294,184 @@ def format_breakout_telegram(results: list, label: str = "") -> str:
 
 
 # ============================================================
+# ============================================================
+# [IPOT PDF PARSER] — Import statement broker IPOT
+# Parse transaksi Buy/Sell, group by ticker, hitung avg PnL
+# ============================================================
+
+def parse_ipot_pdf(pdf_bytes: bytes) -> pd.DataFrame:
+    """
+    Parse PDF statement IPOT.
+    Return DataFrame dengan kolom:
+    date, ticker, action, price, volume, amount, description
+    """
+    if not PDF_AVAILABLE:
+        raise ImportError("pdfplumber tidak tersedia. Pastikan sudah install.")
+
+    import io
+    import re
+
+    rows = []
+    current_date = None
+
+    # Pattern ticker IDX: 2-4 huruf kapital
+    ticker_pattern = re.compile(r'\b([A-Z]{2,5})\b')
+    # Pattern Buy/Sell dari description
+    buy_sell_pattern = re.compile(r'(Buy|Sell)\s+([A-Z]{2,5})', re.IGNORECASE)
+    # Pattern tanggal: DD-Mon-YY atau DD-Mon-YYYY
+    date_pattern = re.compile(r'(\d{2}-(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-\d{2,4})', re.IGNORECASE)
+    # Pattern harga dan volume: angka dengan titik sebagai ribuan
+    num_pattern = re.compile(r'[\d,\.]+')
+
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        full_text = ""
+        for page in pdf.pages:
+            text = page.extract_text()
+            if text:
+                full_text += text + "\n"
+
+    lines = full_text.split('\n')
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+
+        # Cari baris yang mengandung Buy atau Sell
+        bs_match = buy_sell_pattern.search(line)
+        if not bs_match:
+            continue
+
+        action = bs_match.group(1).upper()  # BUY atau SELL
+        ticker = bs_match.group(2).upper()
+
+        # Cari tanggal di sekitar baris ini (dari baris sebelumnya atau baris ini)
+        date_match = date_pattern.search(line)
+        if date_match:
+            try:
+                current_date = pd.to_datetime(date_match.group(1), dayfirst=True).date()
+            except Exception:
+                pass
+
+        # Extract angka dari baris — format: Price Volume Amount
+        # Ambil semua angka di baris
+        numbers = []
+        for token in line.split():
+            # Bersihkan titik ribuan dan koma desimal
+            clean = token.replace('.', '').replace(',', '')
+            try:
+                numbers.append(float(clean))
+            except ValueError:
+                continue
+
+        # Heuristik: angka pertama yang reasonable = price (100-100000)
+        # angka kedua = volume (100-100000)
+        # angka ketiga = amount (dalam ribuan ke atas)
+        price, volume, amount = None, None, None
+        price_candidates = [n for n in numbers if 50 <= n <= 500000]
+        vol_candidates   = [n for n in numbers if 100 <= n <= 1000000 and n % 100 == 0]
+
+        if price_candidates:
+            price = price_candidates[0]
+        if len(vol_candidates) >= 1:
+            volume = vol_candidates[0]
+        if price and volume:
+            amount = price * volume
+
+        if ticker and action in ("BUY", "SELL"):
+            rows.append({
+                "date":        str(current_date) if current_date else "",
+                "ticker":      ticker,
+                "action":      action,
+                "price":       price,
+                "volume":      volume,
+                "amount":      amount,
+                "description": line[:80],
+            })
+
+    return pd.DataFrame(rows) if rows else pd.DataFrame(
+        columns=["date", "ticker", "action", "price", "volume", "amount", "description"]
+    )
+
+
+def group_ipot_trades(df: pd.DataFrame) -> list:
+    """
+    Group transaksi Buy/Sell per ticker.
+    Hitung avg entry, total volume, realized PnL via weighted average.
+    Return list of trade dicts siap masuk ke inv_trades.
+    """
+    if df.empty:
+        return []
+
+    results = []
+    tickers = df["ticker"].unique()
+
+    for ticker in tickers:
+        t_df = df[df["ticker"] == ticker].copy()
+        buys  = t_df[t_df["action"] == "BUY"]
+        sells = t_df[t_df["action"] == "SELL"]
+
+        if buys.empty or sells.empty:
+            continue
+
+        # Weighted average entry
+        total_buy_vol  = buys["volume"].sum()
+        total_buy_amt  = (buys["price"] * buys["volume"]).sum()
+        avg_entry      = total_buy_amt / total_buy_vol if total_buy_vol > 0 else 0
+
+        # Weighted average exit
+        total_sell_vol = sells["volume"].sum()
+        total_sell_amt = (sells["price"] * sells["volume"]).sum()
+        avg_exit       = total_sell_amt / total_sell_vol if total_sell_vol > 0 else 0
+
+        # Volume yang matched (min buy vs sell)
+        matched_vol = min(total_buy_vol, total_sell_vol)
+        lots        = int(matched_vol / 100)
+
+        # Realized PnL — hanya dari volume yang sudah dijual
+        sell_fraction = min(total_sell_vol / total_buy_vol, 1.0) if total_buy_vol > 0 else 1.0
+        realized_cost = avg_entry * total_sell_vol
+        realized_rev  = total_sell_amt
+        pnl_gross     = realized_rev - realized_cost
+        # Estimasi komisi IPOT: 0.15% beli + 0.25% jual
+        komisi = (total_buy_amt * 0.0015) + (total_sell_amt * 0.0025)
+        pnl_net = pnl_gross - komisi
+
+        status = "WIN" if pnl_net > 0 else ("LOSS" if pnl_net < 0 else "BE")
+
+        # Open position kalau sell volume < buy volume
+        is_open = total_sell_vol < total_buy_vol
+        if is_open:
+            status = "OPEN"
+
+        # Tanggal entry = tanggal buy pertama, exit = tanggal sell terakhir
+        entry_date = buys["date"].min() if not buys.empty else ""
+        exit_date  = sells["date"].max() if not sells.empty else ""
+
+        results.append({
+            "date":         entry_date,
+            "ticker":       ticker,
+            "entry":        round(avg_entry, 0),
+            "sl":           0,
+            "tp":           0,
+            "lot":          max(lots, 1),
+            "exit":         round(avg_exit, 0) if not is_open else None,
+            "status":       status,
+            "note":         f"Import IPOT | Buy {int(total_buy_vol/100)}lot @ avg{avg_entry:.0f} | Sell {int(total_sell_vol/100)}lot @ avg{avg_exit:.0f}",
+            "pnl_gross":    round(pnl_gross, 0),
+            "pnl_net":      round(pnl_net, 0),
+            "komisi_est":   round(komisi, 0),
+            "total_buy_vol":  total_buy_vol,
+            "total_sell_vol": total_sell_vol,
+            "buy_dates":    buys["date"].tolist(),
+            "sell_dates":   sells["date"].tolist(),
+        })
+
+    # Sort by entry date
+    results.sort(key=lambda x: x["date"])
+    return results
+
+
 # [MACD DIVERGENCE SCANNER] — 4 tipe divergence untuk IDX
 # Setting 5/35/5 sesuai rekomendasi untuk saham IDX
 # Bullish, Bearish, Hidden Bullish, Hidden Bearish
@@ -5375,8 +5558,8 @@ with tabs[2]:
     st.markdown("---")
 
     # ── INPUT TRADE ───────────────────────────────────────────
-    acc_tab1, acc_tab2, acc_tab3, acc_tab4 = st.tabs(
-        ["📋 Trade Log", "➕ Input Trade", "💰 Modal & Mutasi", "🧠 Cybernetic"]
+    acc_tab1, acc_tab2, acc_tab3, acc_tab4, acc_tab5 = st.tabs(
+        ["📋 Trade Log", "➕ Input Trade", "📥 Import IPOT", "💰 Modal & Mutasi", "🧠 Cybernetic"]
     )
 
     with acc_tab1:
@@ -5509,6 +5692,170 @@ with tabs[2]:
                     st.rerun()
 
     with acc_tab3:
+        st.subheader("📥 Import Statement IPOT")
+        st.caption(
+            "Upload PDF statement broker IPOT. Sistem akan parse semua transaksi Buy/Sell, "
+            "group by ticker, hitung rata-rata entry/exit dan PnL otomatis."
+        )
+
+        if not PDF_AVAILABLE:
+            st.error("❌ Library `pdfplumber` belum terinstall. Tambahkan ke requirements.txt dan redeploy.")
+        else:
+            uploaded_pdf = st.file_uploader(
+                "Upload Statement IPOT (PDF)",
+                type=["pdf"],
+                key="ipot_pdf_upload",
+                help="File PDF dari menu Account Statement IPOT"
+            )
+
+            if uploaded_pdf is not None:
+                with st.spinner("🔍 Membaca PDF dan parsing transaksi..."):
+                    try:
+                        pdf_bytes = uploaded_pdf.read()
+                        raw_df    = parse_ipot_pdf(pdf_bytes)
+
+                        if raw_df.empty:
+                            st.warning("Tidak ada transaksi Buy/Sell yang berhasil diparsing. Cek format PDF.")
+                        else:
+                            st.success(f"✅ Berhasil parse **{len(raw_df)} transaksi** dari PDF")
+
+                            # Tampilkan raw transaksi
+                            with st.expander("📄 Detail Transaksi Raw", expanded=False):
+                                st.dataframe(raw_df, use_container_width=True, hide_index=True)
+
+                            # Group by ticker
+                            grouped = group_ipot_trades(raw_df)
+
+                            if not grouped:
+                                st.warning("Tidak ada pasangan Buy-Sell yang bisa digroup.")
+                            else:
+                                st.markdown(f"### 📊 Hasil Group — {len(grouped)} ticker")
+
+                                # Tampilkan hasil grouped
+                                preview_rows = []
+                                for g in grouped:
+                                    preview_rows.append({
+                                        "Ticker":      g["ticker"],
+                                        "Tgl Entry":   g["date"],
+                                        "Avg Entry":   g["entry"],
+                                        "Avg Exit":    g["exit"] or "OPEN",
+                                        "Lot":         g["lot"],
+                                        "PnL Gross":   g["pnl_gross"],
+                                        "Est Komisi":  g["komisi_est"],
+                                        "PnL Net":     g["pnl_net"],
+                                        "Status":      g["status"],
+                                        "Keterangan":  g["note"],
+                                    })
+
+                                preview_df = pd.DataFrame(preview_rows)
+                                st.dataframe(
+                                    preview_df,
+                                    use_container_width=True,
+                                    hide_index=True,
+                                    column_config={
+                                        "Avg Entry":  st.column_config.NumberColumn(format="%.0f"),
+                                        "Avg Exit":   st.column_config.TextColumn(),
+                                        "PnL Gross":  st.column_config.NumberColumn("PnL Gross (Rp)", format="%.0f"),
+                                        "Est Komisi": st.column_config.NumberColumn("Komisi Est (Rp)", format="%.0f"),
+                                        "PnL Net":    st.column_config.NumberColumn("PnL Net (Rp)", format="%.0f"),
+                                    }
+                                )
+
+                                # Summary
+                                total_pnl_import = sum(g["pnl_net"] for g in grouped if g["status"] != "OPEN")
+                                wins_import  = len([g for g in grouped if g["status"] == "WIN"])
+                                losses_import = len([g for g in grouped if g["status"] == "LOSS"])
+                                open_import  = len([g for g in grouped if g["status"] == "OPEN"])
+
+                                im1, im2, im3, im4 = st.columns(4)
+                                im1.metric("Total PnL Net",  inv_fmt_idr(total_pnl_import),
+                                           delta_color="normal")
+                                im2.metric("Win",  wins_import)
+                                im3.metric("Loss", losses_import)
+                                im4.metric("Open", open_import)
+
+                                st.markdown("---")
+                                st.warning(
+                                    "⚠️ **Sebelum import:** pastikan data di atas sudah benar. "
+                                    "PnL dihitung via weighted average entry — kalau ada partial sell "
+                                    "atau averaging, cek angkanya manual dulu."
+                                )
+
+                                col_imp1, col_imp2 = st.columns(2)
+                                with col_imp1:
+                                    overwrite = st.checkbox(
+                                        "Hapus trade existing sebelum import",
+                                        value=False,
+                                        help="Centang kalau mau replace semua data. Tidak dicentang = append ke trade log yang ada."
+                                    )
+                                with col_imp2:
+                                    include_open = st.checkbox(
+                                        "Include posisi OPEN",
+                                        value=True,
+                                        help="Posisi yang belum di-close (buy volume > sell volume)"
+                                    )
+
+                                if st.button("📥 Import ke Trade Log", type="primary", use_container_width=True):
+                                    import_list = grouped if include_open else [g for g in grouped if g["status"] != "OPEN"]
+
+                                    # Bersihkan field internal sebelum simpan
+                                    clean_trades = []
+                                    for g in import_list:
+                                        clean_trades.append({
+                                            "date":   g["date"],
+                                            "ticker": g["ticker"],
+                                            "entry":  g["entry"],
+                                            "sl":     g["sl"],
+                                            "tp":     g["tp"],
+                                            "lot":    g["lot"],
+                                            "exit":   g["exit"],
+                                            "status": g["status"],
+                                            "note":   g["note"],
+                                        })
+
+                                    if overwrite:
+                                        st.session_state.inv_trades = clean_trades
+                                    else:
+                                        # Hindari duplikat ticker yang sudah ada
+                                        existing_tickers = {t["ticker"] for t in st.session_state.inv_trades}
+                                        new_trades = [t for t in clean_trades if t["ticker"] not in existing_tickers]
+                                        st.session_state.inv_trades.extend(new_trades)
+                                        if len(new_trades) < len(clean_trades):
+                                            skipped = len(clean_trades) - len(new_trades)
+                                            st.info(f"ℹ️ {skipped} ticker dilewati karena sudah ada di trade log.")
+
+                                    # Sync ke journal ATS
+                                    new_rows = []
+                                    for t in clean_trades:
+                                        pnl_v = inv_calc_pnl(t)
+                                        new_rows.append({
+                                            "Date":   t["date"],
+                                            "Ticker": t["ticker"],
+                                            "Entry":  t["entry"],
+                                            "Exit":   t["exit"],
+                                            "Lot":    t["lot"],
+                                            "PnL":    pnl_v,
+                                            "Notes":  t["note"],
+                                        })
+                                    new_journal = pd.DataFrame(new_rows)
+                                    if overwrite:
+                                        st.session_state.journal = new_journal
+                                    else:
+                                        st.session_state.journal = pd.concat(
+                                            [st.session_state.journal, new_journal],
+                                            ignore_index=True
+                                        )
+                                    st.session_state.journal.to_csv(JOURNAL_FILE, index=False)
+
+                                    inv_save()
+                                    st.success(f"✅ {len(clean_trades)} trade berhasil diimport ke Trade Log!")
+                                    st.rerun()
+
+                    except Exception as e:
+                        st.error(f"❌ Gagal parse PDF: {e}")
+                        st.caption("Pastikan file adalah PDF statement IPOT yang valid.")
+
+    with acc_tab4:
         st.subheader("💰 Modal & Rekonsiliasi")
 
         col_m1, col_m2 = st.columns(2)
@@ -5565,7 +5912,7 @@ with tabs[2]:
                 st.success("✅ Mutasi tersimpan")
                 st.rerun()
 
-    with acc_tab4:
+    with acc_tab5:
         st.subheader("🧠 Cybernetic Parameters")
         params = st.session_state.cybernetic_params
         cc1, cc2, cc3, cc4 = st.columns(4)
