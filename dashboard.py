@@ -126,8 +126,8 @@ _telegram_lock = threading.Lock()
 # ============================================================
 # VERSION HISTORY
 # ============================================================
-APP_VERSION  = "V6.0.0"
-APP_UPDATED  = "10 Jul 2026"
+APP_VERSION  = "V6.1.0"
+APP_UPDATED  = "11 Jul 2026"
 
 VERSION_HISTORY = [
     {
@@ -3288,6 +3288,471 @@ def format_breakout_telegram(results: list, label: str = "") -> str:
     return "\n".join(lines)
 
 
+# ============================================================
+# [MACD DIVERGENCE SCANNER] — 4 tipe divergence untuk IDX
+# Setting 5/35/5 sesuai rekomendasi untuk saham IDX
+# Bullish, Bearish, Hidden Bullish, Hidden Bearish
+# ============================================================
+
+def detect_macd_divergence(df: pd.DataFrame,
+                            fast: int = 5,
+                            slow: int = 35,
+                            signal: int = 5,
+                            lookback: int = 5) -> dict:
+    """
+    Deteksi 4 tipe MACD divergence dari DataFrame daily.
+    Return dict berisi tipe divergence yang aktif.
+    """
+    if len(df) < slow + signal + lookback * 2:
+        return {"type": None}
+
+    close = df["Close"].squeeze()
+    high  = df["High"].squeeze()
+    low   = df["Low"].squeeze()
+
+    # MACD 5/35/5
+    ema_fast    = close.ewm(span=fast,   adjust=False).mean()
+    ema_slow    = close.ewm(span=slow,   adjust=False).mean()
+    macd_line   = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    hist        = macd_line - signal_line
+
+    price_arr = close.values
+    high_arr  = high.values
+    low_arr   = low.values
+    macd_arr  = macd_line.values
+    n = lookback
+
+    price_pivots_high, price_pivots_low   = [], []
+    macd_pivots_high,  macd_pivots_low    = [], []
+
+    for i in range(n, len(price_arr) - n):
+        if high_arr[i] == max(high_arr[i-n:i+n+1]):
+            price_pivots_high.append((i, high_arr[i]))
+        if low_arr[i] == min(low_arr[i-n:i+n+1]):
+            price_pivots_low.append((i, low_arr[i]))
+        if macd_arr[i] == max(macd_arr[i-n:i+n+1]):
+            macd_pivots_high.append((i, macd_arr[i]))
+        if macd_arr[i] == min(macd_arr[i-n:i+n+1]):
+            macd_pivots_low.append((i, macd_arr[i]))
+
+    result = {
+        "type":             None,
+        "bull_div":         False,
+        "bear_div":         False,
+        "hidden_bull_div":  False,
+        "hidden_bear_div":  False,
+        "macd_bull":        bool(float(hist.iloc[-1]) > float(hist.iloc[-2])),
+        "macd_above_zero":  bool(float(macd_line.iloc[-1]) > 0),
+        "macd_val":         round(float(macd_line.iloc[-1]), 4),
+        "hist_val":         round(float(hist.iloc[-1]), 4),
+    }
+
+    if len(price_pivots_low) >= 2 and len(macd_pivots_low) >= 2:
+        p1_idx, p1_price = price_pivots_low[-2]
+        p2_idx, p2_price = price_pivots_low[-1]
+        m1_idx, m1_macd  = macd_pivots_low[-2]
+        m2_idx, m2_macd  = macd_pivots_low[-1]
+
+        if abs(p2_idx - p1_idx) >= lookback * 2:
+            # Bullish Divergence: price lower low, MACD higher low
+            if p2_price < p1_price and m2_macd > m1_macd:
+                result["bull_div"] = True
+                result["type"] = "BULLISH_DIV"
+            # Hidden Bullish: price higher low, MACD lower low
+            if p2_price > p1_price and m2_macd < m1_macd:
+                result["hidden_bull_div"] = True
+                if result["type"] is None:
+                    result["type"] = "HIDDEN_BULL_DIV"
+
+    if len(price_pivots_high) >= 2 and len(macd_pivots_high) >= 2:
+        p1_idx, p1_price = price_pivots_high[-2]
+        p2_idx, p2_price = price_pivots_high[-1]
+        m1_idx, m1_macd  = macd_pivots_high[-2]
+        m2_idx, m2_macd  = macd_pivots_high[-1]
+
+        if abs(p2_idx - p1_idx) >= lookback * 2:
+            # Bearish Divergence: price higher high, MACD lower high
+            if p2_price > p1_price and m2_macd < m1_macd:
+                result["bear_div"] = True
+                if result["type"] is None:
+                    result["type"] = "BEARISH_DIV"
+            # Hidden Bearish: price lower high, MACD higher high
+            if p2_price < p1_price and m2_macd > m1_macd:
+                result["hidden_bear_div"] = True
+                if result["type"] is None:
+                    result["type"] = "HIDDEN_BEAR_DIV"
+
+    return result
+
+
+def scan_macd_divergence(universe: list) -> list:
+    """
+    Scan ISSI universe untuk MACD divergence (5/35/5).
+    Return list of dict sorted by priority:
+    BULLISH_DIV > HIDDEN_BULL_DIV > HIDDEN_BEAR_DIV > BEARISH_DIV
+    """
+    results   = []
+    tz_wib    = pytz.timezone("Asia/Jakarta")
+    today_wib = datetime.now(tz_wib).date()
+
+    for ticker in universe:
+        try:
+            df = yf.download(
+                ticker, period="90d", interval="1d",
+                progress=False, auto_adjust=True,
+            )
+            if df is None or len(df) < 50:
+                continue
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+
+            df.index = pd.to_datetime(df.index).tz_localize(None).normalize()
+            df = df[df.index.date <= today_wib].sort_index()
+
+            if len(df) < 50:
+                continue
+
+            div = detect_macd_divergence(df)
+            if div["type"] is None:
+                continue
+
+            close    = df["Close"].squeeze()
+            high_s   = df["High"].squeeze()
+            low_s    = df["Low"].squeeze()
+            volume   = df["Volume"].squeeze()
+            vol_ma   = float(volume.tail(20).mean())
+            vol_last = float(volume.iloc[-1])
+            c_last   = float(close.iloc[-1])
+            ema9     = float(close.ewm(span=9, adjust=False).mean().iloc[-1])
+
+            # Weekly VWAP sederhana
+            hlc3   = (high_s + low_s + close) / 3
+            df2    = df.copy()
+            df2["dow"]          = pd.to_datetime(df2.index).dayofweek
+            df2["is_new_week"]  = (df2["dow"] == 0) & (df2["dow"].shift(1) != 0)
+            df2["tpvol"]        = hlc3 * volume
+            _cv, _ct = 0.0, 0.0
+            vwap_vals = []
+            for i in range(len(df2)):
+                if df2["is_new_week"].iloc[i] or i == 0:
+                    _cv = float(volume.iloc[i])
+                    _ct = float(df2["tpvol"].iloc[i])
+                else:
+                    _cv += float(volume.iloc[i])
+                    _ct += float(df2["tpvol"].iloc[i])
+                vwap_vals.append(_ct / _cv if _cv > 0 else float("nan"))
+            vwap = vwap_vals[-1] if vwap_vals else c_last
+
+            bull_struct = c_last > ema9 and ema9 > vwap
+
+            results.append({
+                "ticker":          ticker.replace(".JK", ""),
+                "harga":           round(c_last, 0),
+                "div_type":        div["type"],
+                "bull_div":        div["bull_div"],
+                "hidden_bull_div": div["hidden_bull_div"],
+                "bear_div":        div["bear_div"],
+                "hidden_bear_div": div["hidden_bear_div"],
+                "macd_bull":       div["macd_bull"],
+                "macd_zero":       div["macd_above_zero"],
+                "macd_val":        div["macd_val"],
+                "bull_struct":     bull_struct,
+                "vol_ratio":       round(vol_last / vol_ma, 1) if vol_ma > 0 else 0,
+            })
+
+        except Exception as e:
+            LOG.warning(f"macd_div_scan | {ticker} | {e}")
+            continue
+
+    priority = {
+        "BULLISH_DIV":     0,
+        "HIDDEN_BULL_DIV": 1,
+        "HIDDEN_BEAR_DIV": 2,
+        "BEARISH_DIV":     3,
+    }
+    results.sort(key=lambda x: priority.get(x["div_type"], 9))
+    LOG.info(f"macd_div_scan | scanned={len(universe)} found={len(results)}")
+    return results
+
+
+def format_macd_div_telegram(results: list, label: str = "") -> str:
+    """Format hasil MACD divergence scan jadi pesan Telegram."""
+    now_str = datetime.now(WIB).strftime("%d %b %Y %H:%M WIB")
+    tag     = f" [{label}]" if label else ""
+
+    bull   = [r for r in results if r["div_type"] == "BULLISH_DIV"]
+    h_bull = [r for r in results if r["div_type"] == "HIDDEN_BULL_DIV"]
+    h_bear = [r for r in results if r["div_type"] == "HIDDEN_BEAR_DIV"]
+    bear   = [r for r in results if r["div_type"] == "BEARISH_DIV"]
+
+    if not results:
+        return (
+            f"📊 MACD DIV SCAN{tag} — {now_str}\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"Tidak ada divergence terdeteksi hari ini."
+        )
+
+    lines = [
+        f"📊 MACD DIVERGENCE SCAN{tag} — {now_str}",
+        f"━━━━━━━━━━━━━━━━━━━━",
+        f"Setting 5/35/5  |  {len(results)} divergence\n",
+    ]
+
+    def fmt_row(r):
+        struct  = "✅ BULL" if r["bull_struct"] else "⚠ NEUT/BEAR"
+        macd_z  = "ZERO+" if r["macd_zero"] else "ZERO-"
+        macd_h  = "HIST▲" if r["macd_bull"] else "HIST▼"
+        vol_tag = f"Vol {r['vol_ratio']}x"
+        return (
+            f"  {r['ticker']}  Harga {r['harga']:,.0f}\n"
+            f"  Struktur: {struct} | {macd_h} {macd_z} | {vol_tag}"
+        )
+
+    if bull:
+        lines.append(f"🟢 BULLISH DIVERGENCE ({len(bull)}) — Potensi Reversal Naik")
+        lines.append("  Price Lower Low | MACD Higher Low")
+        for r in bull:
+            lines.append(fmt_row(r))
+        lines.append("")
+
+    if h_bull:
+        lines.append(f"🔵 HIDDEN BULL DIV ({len(h_bull)}) — Trend Continuation Naik")
+        lines.append("  Price Higher Low | MACD Lower Low")
+        for r in h_bull:
+            lines.append(fmt_row(r))
+        lines.append("")
+
+    if h_bear:
+        lines.append(f"🟠 HIDDEN BEAR DIV ({len(h_bear)}) — Trend Continuation Turun")
+        lines.append("  Price Lower High | MACD Higher High")
+        for r in h_bear:
+            lines.append(fmt_row(r))
+        lines.append("")
+
+    if bear:
+        lines.append(f"🔴 BEARISH DIVERGENCE ({len(bear)}) — Potensi Reversal Turun")
+        lines.append("  Price Higher High | MACD Lower High")
+        for r in bear:
+            lines.append(fmt_row(r))
+        lines.append("")
+
+    lines.append(
+        "⚠ Konfirmasi manual wajib sebelum entry\n"
+        "🟢=Reversal naik 🔵=Lanjut naik 🟠=Lanjut turun 🔴=Reversal turun"
+    )
+    return "\n".join(lines)
+
+
+_macd_div_last: dict = {"results": [], "ts": None, "label": ""}
+
+def _macd_div_job(label: str = ""):
+    """Job scheduler — scan MACD divergence + kirim Telegram."""
+    if not is_trading_day():
+        return
+    results = scan_macd_divergence(ISSI_UNIVERSE)
+    msg     = format_macd_div_telegram(results, label)
+    send_telegram(msg)
+    with _state_lock:
+        _macd_div_last["results"] = results
+        _macd_div_last["ts"]      = datetime.now(WIB).strftime("%H:%M WIB")
+        _macd_div_last["label"]   = label
+    LOG.info(f"_macd_div_job | label={label} found={len(results)}")
+
+
+# [VWAP+EMA SCANNER] — Signal A detection Daily
+_vwap_ema_last: dict = {"results": [], "ts": None, "label": ""}
+
+def scan_vwap_ema_signal(universe: list) -> list:
+    """
+    Scan ISSI universe untuk signal A (9EMA + Weekly VWAP cross).
+    Logic: close > EMA9 > Weekly VWAP + volume > 1.5x avg + OBV rising
+    """
+    results   = []
+    tz_wib    = pytz.timezone("Asia/Jakarta")
+    today_wib = datetime.now(tz_wib).date()
+
+    for ticker in universe:
+        try:
+            df = yf.download(
+                ticker, period="60d", interval="1d",
+                progress=False, auto_adjust=True,
+            )
+            if df is None or len(df) < 20:
+                continue
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+
+            df.index = pd.to_datetime(df.index).tz_localize(None).normalize()
+            df = df[df.index.date <= today_wib].sort_index()
+
+            if len(df) < 20:
+                continue
+
+            close  = df["Close"].squeeze()
+            high   = df["High"].squeeze()
+            low    = df["Low"].squeeze()
+            volume = df["Volume"].squeeze()
+            hlc3   = (high + low + close) / 3
+
+            ema9 = close.ewm(span=9, adjust=False).mean()
+
+            # Weekly Anchored VWAP
+            df2 = df.copy()
+            df2["dow"]         = pd.to_datetime(df2.index).dayofweek
+            df2["is_new_week"] = (df2["dow"] == 0) & (df2["dow"].shift(1) != 0)
+            df2["tpvol"]       = hlc3 * volume
+            _cv, _ct = 0.0, 0.0
+            vwap_vals = []
+            for i in range(len(df2)):
+                if df2["is_new_week"].iloc[i] or i == 0:
+                    _cv = float(volume.iloc[i])
+                    _ct = float(df2["tpvol"].iloc[i])
+                else:
+                    _cv += float(volume.iloc[i])
+                    _ct += float(df2["tpvol"].iloc[i])
+                vwap_vals.append(_ct / _cv if _cv > 0 else float("nan"))
+            weekly_vwap = pd.Series(vwap_vals, index=df.index)
+
+            # OBV
+            obv_dir    = close.diff().apply(lambda x: 1 if x > 0 else (-1 if x < 0 else 0))
+            obv        = (volume * obv_dir).cumsum()
+            vol_ma     = volume.rolling(20).mean()
+
+            c_last   = float(close.iloc[-1])
+            c_prev   = float(close.iloc[-2])
+            e_last   = float(ema9.iloc[-1])
+            e_prev   = float(ema9.iloc[-2])
+            v_last   = float(weekly_vwap.iloc[-1]) if not np.isnan(weekly_vwap.iloc[-1]) else 0
+            v_prev   = float(weekly_vwap.iloc[-2]) if not np.isnan(weekly_vwap.iloc[-2]) else 0
+            vol_last = float(volume.iloc[-1])
+            vol_ma_v = float(vol_ma.iloc[-1]) if not np.isnan(vol_ma.iloc[-1]) else 1
+            obv_last = float(obv.iloc[-1])
+            obv_prev = float(obv.iloc[-2])
+
+            curr_bull  = c_last > e_last and e_last > v_last
+            prev_bull  = c_prev > e_prev and e_prev > v_prev
+            bull_cross = curr_bull and not prev_bull
+
+            if not curr_bull:
+                continue
+
+            high_vol   = vol_last >= vol_ma_v * 1.5
+            obv_rising = obv_last > obv_prev
+
+            o_last = float(df["Open"].iloc[-1])
+            o_prev = float(df["Open"].iloc[-2])
+            body     = abs(c_last - o_last)
+            low_wick = min(c_last, o_last) - float(low.iloc[-1])
+            up_wick  = float(high.iloc[-1]) - max(c_last, o_last)
+            is_hammer    = body > 0 and low_wick >= 2*body and up_wick <= body*0.5 and c_last > o_last
+            is_engulfing = c_last > o_last and o_prev > c_prev and c_last > o_prev and o_last < c_prev
+            bullish_candle = is_hammer or is_engulfing
+
+            # MACD 8/17/9
+            ema_fast    = close.ewm(span=8,  adjust=False).mean()
+            ema_slow    = close.ewm(span=17, adjust=False).mean()
+            macd        = ema_fast - ema_slow
+            macd_signal = macd.ewm(span=9, adjust=False).mean()
+            hist_macd   = macd - macd_signal
+            macd_bull      = float(hist_macd.iloc[-1]) > float(hist_macd.iloc[-2])
+            macd_above_zero = float(macd.iloc[-1]) > 0
+
+            if bull_cross and high_vol and bullish_candle and obv_rising:
+                grade = "A+"
+            elif bull_cross and (high_vol or bullish_candle) and obv_rising:
+                grade = "A"
+            elif bull_cross:
+                grade = "B"
+            else:
+                grade = "HOLD"
+
+            score = 0
+            if curr_bull:       score += 30
+            if bull_cross:      score += 20
+            if high_vol:        score += 20
+            if obv_rising:      score += 15
+            if bullish_candle:  score += 10
+            if macd_bull:       score += 5
+
+            results.append({
+                "ticker":       ticker.replace(".JK", ""),
+                "harga":        round(c_last, 0),
+                "ema9":         round(e_last, 0),
+                "vwap":         round(v_last, 0),
+                "grade":        grade,
+                "score":        score,
+                "high_vol":     high_vol,
+                "obv_rising":   obv_rising,
+                "bull_cross":   bull_cross,
+                "macd_bull":    macd_bull,
+                "macd_zero":    macd_above_zero,
+                "vol_ratio":    round(vol_last / vol_ma_v, 1) if vol_ma_v > 0 else 0,
+            })
+
+        except Exception as e:
+            LOG.warning(f"vwap_ema_scan | {ticker} | {e}")
+            continue
+
+    grade_order = {"A+": 0, "A": 1, "B": 2, "HOLD": 3}
+    results.sort(key=lambda x: (grade_order.get(x["grade"], 9), -x["score"]))
+    LOG.info(f"vwap_ema_scan | scanned={len(universe)} signals={len(results)}")
+    return results
+
+
+def format_vwap_ema_telegram(results: list, label: str = "") -> str:
+    """Format hasil VWAP+EMA scan jadi pesan Telegram."""
+    now_str = datetime.now(WIB).strftime("%d %b %Y %H:%M WIB")
+    tag     = f" [{label}]" if label else ""
+    show    = [r for r in results if r["grade"] in ("A+", "A", "B")]
+
+    if not show:
+        return (
+            f"📊 VWAP+EMA SCAN{tag} — {now_str}\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"Tidak ada signal A+/A/B hari ini."
+        )
+
+    grade_emoji = {"A+": "🟢", "A": "🟡", "B": "🔵"}
+    lines = [
+        f"📊 VWAP+EMA SCAN{tag} — {now_str}",
+        f"━━━━━━━━━━━━━━━━━━━━",
+        f"9EMA > VWAP Cross  |  {len(show)} signal\n",
+    ]
+    for r in show:
+        em       = grade_emoji.get(r["grade"], "⚪")
+        vol_tag  = f"Vol {r['vol_ratio']}x" if r["high_vol"] else "Vol rendah"
+        obv_tag  = "OBV▲" if r["obv_rising"] else "OBV▼"
+        macd_tag = "MACD▲" if r["macd_bull"] else "MACD▼"
+        zero_tag = "ZERO+" if r["macd_zero"] else "ZERO-"
+        cross_tag = "CROSS✓" if r["bull_cross"] else "HOLD"
+        lines.append(
+            f"{em} {r['ticker']}  [{r['grade']}]  Score:{r['score']}\n"
+            f"   Harga {r['harga']:,.0f}  EMA9 {r['ema9']:,.0f}  VWAP {r['vwap']:,.0f}\n"
+            f"   {cross_tag} | {vol_tag} | {obv_tag} | {macd_tag} {zero_tag}"
+        )
+
+    lines.append(
+        "\n⚠ Konfirmasi manual: cek MACD Daily + tabel TF sebelum entry\n"
+        "🟢=A+ (full) 🟡=A (normal) 🔵=B (wait/kecil)"
+    )
+    return "\n".join(lines)
+
+
+def _vwap_ema_job(label: str = ""):
+    """Job scheduler — scan VWAP+EMA + kirim Telegram."""
+    if not is_trading_day():
+        return
+    results = scan_vwap_ema_signal(ISSI_UNIVERSE)
+    msg     = format_vwap_ema_telegram(results, label)
+    send_telegram(msg)
+    with _state_lock:
+        _vwap_ema_last["results"] = results
+        _vwap_ema_last["ts"]      = datetime.now(WIB).strftime("%H:%M WIB")
+        _vwap_ema_last["label"]   = label
+    LOG.info(f"_vwap_ema_job | label={label} signals={len(results)}")
+
+
 # State simpan hasil breakout terakhir (thread-safe via _state_lock)
 _breakout_last: dict = {"results": [], "ts": None, "label": ""}
 
@@ -3406,6 +3871,47 @@ def start_scheduler():
             misfire_grace_time = 60,
         )
 
+    # ── [MACD DIVERGENCE] Scan 2x sehari ────────────────────
+    _div_schedule = [
+        {"hour": 8,  "minute": 30, "label": "08:30 Pre-Market"},
+        {"hour": 15, "minute": 45, "label": "15:45 Post-Close"},
+    ]
+    for ds in _div_schedule:
+        scheduler.add_job(
+            func    = lambda lbl=ds["label"]: _macd_div_job(lbl),
+            trigger = CronTrigger(
+                day_of_week = "mon-fri",
+                hour        = ds["hour"],
+                minute      = ds["minute"],
+                timezone    = WIB,
+            ),
+            id               = f"macd_div_{ds['hour']:02d}{ds['minute']:02d}",
+            name             = f"MACD Div Scan {ds['label']}",
+            replace_existing = True,
+            misfire_grace_time = 120,
+        )
+
+    # ── [VWAP+EMA] Signal scan 3x sehari ────────────────────
+    _vwap_schedule = [
+        {"hour": 8,  "minute": 45, "label": "08:45 Pre-Market"},
+        {"hour": 11, "minute": 30, "label": "11:30 Mid-Session"},
+        {"hour": 15, "minute": 30, "label": "15:30 Post-Close"},
+    ]
+    for vs in _vwap_schedule:
+        scheduler.add_job(
+            func    = lambda lbl=vs["label"]: _vwap_ema_job(lbl),
+            trigger = CronTrigger(
+                day_of_week = "mon-fri",
+                hour        = vs["hour"],
+                minute      = vs["minute"],
+                timezone    = WIB,
+            ),
+            id               = f"vwap_ema_{vs['hour']:02d}{vs['minute']:02d}",
+            name             = f"VWAP+EMA Scan {vs['label']}",
+            replace_existing = True,
+            misfire_grace_time = 120,
+        )
+
     scheduler.start()
 
     # Notifikasi startup
@@ -3415,6 +3921,8 @@ def start_scheduler():
         f"Full scan: 09:05 | 09:30 | 11:30 | 13:35 | 15:00 WIB\n"
         f"Intraday refresh: setiap 15 menit jam bursa\n"
         f"🚀 Breakout scan: 09:00 | 09:15 | 09:30 | 09:45 | 10:00 WIB\n"
+        f"📊 VWAP+EMA scan: 08:45 | 11:30 | 15:30 WIB\n"
+        f"📈 MACD Div scan: 08:30 | 15:45 WIB\n"
         f"⚡ Spike detection aktif — tidak akan ketinggalan pergerakan ✅"
     )
     return scheduler
