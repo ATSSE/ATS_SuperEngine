@@ -126,7 +126,7 @@ _telegram_lock = threading.Lock()
 # ============================================================
 # VERSION HISTORY
 # ============================================================
-APP_VERSION  = "V6.1.0"
+APP_VERSION  = "V6.2.0"
 APP_UPDATED  = "11 Jul 2026"
 
 VERSION_HISTORY = [
@@ -4263,7 +4263,7 @@ header_html = (
 
 st.markdown(header_html, unsafe_allow_html=True)
 
-tabs = st.tabs(["📖 HOW TO USE", "📊 TRADING DESK", "💼 ACCOUNT", "📋 REPORT", "🕌 ISSI CHECK", "🎯 BANDAR HUNTER", "🚀 BREAKOUT SCAN", "🗂️ STOCKBIT TRACKER", "📚 WISDOM"])
+tabs = st.tabs(["📖 HOW TO USE", "📊 TRADING DESK", "💼 ACCOUNT", "📋 REPORT", "🕌 ISSI CHECK", "🚀 BREAKOUT SCAN", "📚 WISDOM"])
 
 # ─────────────────────────────────────────────────────────────
 # TAB 0 — HOW TO USE
@@ -5238,42 +5238,347 @@ with tabs[1]:
 # TAB 2 — ACCOUNT
 # ─────────────────────────────────────────────────────────────
 with tabs[2]:
-    st.subheader("💼 Manajemen Akun")
-    col_inp, col_pad = st.columns([2, 3])
-    with col_inp:
-        # Cast ke int agar konsisten dengan min_value dan step
-        current_balance = int(st.session_state.balance)
-        balance_input = st.number_input("💰 Modal / Balance (Rp)",
-            min_value=100_000, step=100_000, value=current_balance,
-            key="balance_account_input",
-            help="Modal trading. Dipakai untuk kalkulasi lot & risk per trade.")
-        if balance_input != current_balance:
-            st.session_state.balance = int(balance_input)
-            save_state()
-            st.success("✅ Balance diperbarui & tersimpan")
-            time.sleep(0.4)
-            st.rerun()
-    st.markdown("---")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Balance",            f"Rp {idr(st.session_state.balance)}")
-    c2.metric("Risk/Trade (2%)",    f"Rp {idr(st.session_state.balance * 0.02)}")
-    c3.metric("Max 5 Posisi (40%)", f"Rp {idr(st.session_state.balance * 0.40)}")
-    c4.metric("Safe Cash (60%)",    f"Rp {idr(st.session_state.balance * 0.60)}")
+    st.markdown("## 💼 Account & Investor Dashboard")
+
+    # ── Session state untuk investor trades ──────────────────
+    if "inv_trades" not in st.session_state:
+        st.session_state.inv_trades = []
+    if "inv_modal" not in st.session_state:
+        st.session_state.inv_modal = int(st.session_state.get("balance", 6000000))
+    if "inv_mutasi" not in st.session_state:
+        st.session_state.inv_mutasi = []
+
+    INV_FILE = "investor_trades.json"
+
+    def inv_save():
+        try:
+            data = {
+                "modal":   st.session_state.inv_modal,
+                "trades":  st.session_state.inv_trades,
+                "mutasi":  st.session_state.inv_mutasi,
+            }
+            with open(INV_FILE, "w") as f:
+                json.dump(data, f, indent=2, default=str)
+        except Exception as e:
+            st.error(f"Gagal simpan: {e}")
+
+    def inv_load():
+        try:
+            if os.path.exists(INV_FILE):
+                with open(INV_FILE) as f:
+                    data = json.load(f)
+                st.session_state.inv_modal  = data.get("modal", 6000000)
+                st.session_state.inv_trades = data.get("trades", [])
+                st.session_state.inv_mutasi = data.get("mutasi", [])
+                # Sync balance ke ATS engine
+                st.session_state.balance = int(st.session_state.inv_modal)
+        except Exception:
+            pass
+
+    def inv_calc_pnl(t):
+        if not t.get("exit") or t.get("status") == "OPEN":
+            return None
+        return (float(t["exit"]) - float(t["entry"])) * int(t.get("lot", 1)) * 100
+
+    def inv_calc_rr(t):
+        try:
+            entry, sl, tp = float(t["entry"]), float(t["sl"]), float(t["tp"])
+            if entry == sl:
+                return None
+            return round(abs(tp - entry) / abs(entry - sl), 2)
+        except Exception:
+            return None
+
+    def inv_fmt_idr(n):
+        if n is None or (isinstance(n, float) and np.isnan(n)):
+            return "—"
+        abs_n = abs(n)
+        if abs_n >= 1e9:
+            s = f"{abs_n/1e6:.0f}Jt"
+        elif abs_n >= 1e6:
+            s = f"{abs_n/1e6:.1f}Jt"
+        elif abs_n >= 1e3:
+            s = f"{abs_n/1e3:.0f}rb"
+        else:
+            s = f"{abs_n:,.0f}"
+        return ("" if n >= 0 else "-") + "Rp " + s
+
+    # Load data saat pertama kali
+    if "inv_loaded" not in st.session_state:
+        inv_load()
+        st.session_state.inv_loaded = True
+
+    trades = st.session_state.inv_trades
+
+    # ── KPI STRIP ─────────────────────────────────────────────
+    closed = [t for t in trades if t.get("status") != "OPEN"]
+    wins   = [t for t in closed if t.get("status") == "WIN"]
+    losses = [t for t in closed if t.get("status") == "LOSS"]
+    open_t = [t for t in trades if t.get("status") == "OPEN"]
+
+    total_pnl = sum(inv_calc_pnl(t) or 0 for t in closed)
+    equity    = st.session_state.inv_modal + total_pnl
+    wr        = round(len(wins) / len(closed) * 100) if closed else 0
+    rr_vals   = [inv_calc_rr(t) for t in trades if inv_calc_rr(t)]
+    avg_rr    = round(sum(rr_vals) / len(rr_vals), 1) if rr_vals else 0
+    pnl_pct   = round(total_pnl / st.session_state.inv_modal * 100, 2) if st.session_state.inv_modal else 0
+
+    k1, k2, k3, k4, k5, k6 = st.columns(6)
+    k1.metric("Modal",       inv_fmt_idr(st.session_state.inv_modal))
+    k2.metric("Equity",      inv_fmt_idr(equity),
+              delta=f"{pnl_pct:+.2f}%",
+              delta_color="normal")
+    k3.metric("Total PnL",   inv_fmt_idr(total_pnl),
+              delta_color="normal")
+    k4.metric("Win Rate",    f"{wr}%",
+              delta=f"{len(wins)}P / {len(losses)}L")
+    k5.metric("Avg RR",      f"{avg_rr}R")
+    k6.metric("Open",        len(open_t))
 
     st.markdown("---")
-    st.subheader("🧠 Cybernetic Parameters")
-    params = st.session_state.cybernetic_params
-    cc1, cc2, cc3, cc4 = st.columns(4)
-    cc1.metric("Min Score",       params["min_score"])
-    cc2.metric("Execute Now Th.", params["execute_now_threshold"])
-    cc3.metric("Min RR",          params["min_rr"])
-    cc4.metric("Last Adjust",     str(params.get("last_adjust_date", "-")))
-    st.caption(f"⚙️ Cybernetic aktif setelah **{CYBER_CONFIG['min_trades_for_adjust']} trade** di journal.")
 
-    if params.get("adjustment_history"):
-        st.markdown("**Riwayat Penyesuaian:**")
-        st.dataframe(pd.DataFrame(params["adjustment_history"]).tail(10),
-                     use_container_width=True, hide_index=True)
+    # ── EQUITY CURVE ──────────────────────────────────────────
+    if closed:
+        st.subheader("📈 Equity Curve")
+        pnl_list  = [inv_calc_pnl(t) or 0 for t in closed]
+        cum_pnl   = []
+        running   = 0
+        for p in pnl_list:
+            running += p
+            cum_pnl.append(running)
+
+        eq_df = pd.DataFrame({
+            "Trade#": list(range(1, len(cum_pnl) + 1)),
+            "PnL Kumulatif": cum_pnl,
+        })
+        fig_eq = go.Figure()
+        fig_eq.add_trace(go.Scatter(
+            x=eq_df["Trade#"], y=eq_df["PnL Kumulatif"],
+            mode="lines+markers", name="Equity",
+            line=dict(color="#00c896", width=2),
+            fill="tozeroy", fillcolor="rgba(0,200,150,0.1)"
+        ))
+        fig_eq.update_layout(
+            height=220, margin=dict(l=0, r=0, t=10, b=0),
+            xaxis_title="Trade #", yaxis_title="PnL Kumulatif (Rp)",
+            plot_bgcolor="#0d1117", paper_bgcolor="#0d1117",
+            font_color="#d4dce8",
+        )
+        st.plotly_chart(fig_eq, use_container_width=True)
+
+        # Drawdown
+        cum_arr = np.array(cum_pnl)
+        dd      = cum_arr - np.maximum.accumulate(cum_arr)
+        max_dd  = dd.min()
+        st.metric("Max Drawdown", inv_fmt_idr(max_dd))
+
+    st.markdown("---")
+
+    # ── INPUT TRADE ───────────────────────────────────────────
+    acc_tab1, acc_tab2, acc_tab3, acc_tab4 = st.tabs(
+        ["📋 Trade Log", "➕ Input Trade", "💰 Modal & Mutasi", "🧠 Cybernetic"]
+    )
+
+    with acc_tab1:
+        st.caption(f"**{len(trades)} trade** tersimpan")
+        if not trades:
+            st.info("Belum ada trade. Tambah di tab **Input Trade**.")
+        else:
+            rows = []
+            for i, t in enumerate(trades):
+                pnl = inv_calc_pnl(t)
+                rr  = inv_calc_rr(t)
+                rows.append({
+                    "#":        i + 1,
+                    "Tanggal":  t.get("date", "—"),
+                    "Ticker":   t.get("ticker", "—"),
+                    "Entry":    t.get("entry", 0),
+                    "SL":       t.get("sl", 0),
+                    "TP":       t.get("tp", 0),
+                    "RR":       f"{rr}R" if rr else "—",
+                    "Exit":     t.get("exit", "—"),
+                    "PnL":      pnl,
+                    "PnL%":     round((float(t.get("exit", 0)) - float(t["entry"])) / float(t["entry"]) * 100, 2)
+                                if t.get("exit") and t.get("status") != "OPEN" else None,
+                    "Status":   t.get("status", "OPEN"),
+                    "Keterangan": t.get("note", ""),
+                })
+            df_trades = pd.DataFrame(rows)
+
+            st.dataframe(
+                df_trades,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "PnL":  st.column_config.NumberColumn("PnL (Rp)", format="%.0f"),
+                    "PnL%": st.column_config.NumberColumn("PnL %",    format="%.2f%%"),
+                }
+            )
+
+            # Download CSV
+            csv_data = df_trades.to_csv(index=False).encode()
+            st.download_button(
+                "📥 Download Trade Log (CSV)", csv_data,
+                file_name=f"ats_trades_{datetime.now(WIB).strftime('%Y%m%d')}.csv",
+                mime="text/csv"
+            )
+
+            # Delete trade
+            with st.expander("🗑️ Hapus Trade"):
+                del_idx = st.number_input("Nomor trade yang mau dihapus (#)", min_value=1,
+                                          max_value=len(trades), step=1, key="inv_del_idx")
+                if st.button("Hapus Trade", type="secondary"):
+                    st.session_state.inv_trades.pop(int(del_idx) - 1)
+                    inv_save()
+                    st.success("Trade dihapus")
+                    st.rerun()
+
+        # ── Statistik ──────────────────────────────────────────
+        if closed:
+            st.markdown("---")
+            st.subheader("📊 Statistik Performa")
+            avg_win  = np.mean([inv_calc_pnl(t) for t in wins  if inv_calc_pnl(t)]) if wins  else 0
+            avg_loss = np.mean([inv_calc_pnl(t) for t in losses if inv_calc_pnl(t)]) if losses else 0
+            pf       = abs(avg_win / avg_loss) if avg_loss else 0
+            best     = max((inv_calc_pnl(t) or 0 for t in closed), default=0)
+            worst    = min((inv_calc_pnl(t) or 0 for t in closed), default=0)
+
+            s1, s2, s3, s4 = st.columns(4)
+            s1.metric("Profit Factor", f"{pf:.2f}")
+            s2.metric("Avg Win",       inv_fmt_idr(avg_win))
+            s3.metric("Avg Loss",      inv_fmt_idr(avg_loss))
+            s4.metric("Best Trade",    inv_fmt_idr(best))
+
+            s5, s6, s7, s8 = st.columns(4)
+            s5.metric("Worst Trade",   inv_fmt_idr(worst))
+            s6.metric("Total Trades",  len(closed))
+            s7.metric("Total Win",     len(wins))
+            s8.metric("Total Loss",    len(losses))
+
+    with acc_tab2:
+        st.subheader("➕ Input Trade Baru")
+        with st.form("inv_trade_form", clear_on_submit=True):
+            fc1, fc2 = st.columns(2)
+            with fc1:
+                t_date   = st.date_input("Tanggal", value=datetime.now(WIB).date())
+                t_ticker = st.text_input("Ticker", placeholder="BBCA").upper()
+                t_entry  = st.number_input("Entry", min_value=1, step=1)
+                t_sl     = st.number_input("Stop Loss", min_value=1, step=1)
+            with fc2:
+                t_tp     = st.number_input("Take Profit", min_value=1, step=1)
+                t_lot    = st.number_input("Lot", min_value=1, step=1, value=1)
+                t_exit   = st.number_input("Exit Price (0 = masih open)", min_value=0, step=1)
+                t_status = st.selectbox("Status", ["OPEN", "WIN", "LOSS", "BE"])
+            t_note = st.text_input("Keterangan", placeholder="BOD, AboveVWAP, MSS Bull...")
+
+            submitted = st.form_submit_button("💾 Simpan Trade", type="primary",
+                                              use_container_width=True)
+            if submitted:
+                if not t_ticker:
+                    st.error("Ticker wajib diisi")
+                else:
+                    new_trade = {
+                        "date":   str(t_date),
+                        "ticker": t_ticker,
+                        "entry":  t_entry,
+                        "sl":     t_sl,
+                        "tp":     t_tp,
+                        "lot":    t_lot,
+                        "exit":   t_exit if t_exit > 0 else None,
+                        "status": t_status,
+                        "note":   t_note,
+                    }
+                    st.session_state.inv_trades.append(new_trade)
+                    inv_save()
+                    # Sync journal ATS juga
+                    pnl_val = inv_calc_pnl(new_trade)
+                    new_row = pd.DataFrame([{
+                        "Date":   str(t_date),
+                        "Ticker": t_ticker,
+                        "Entry":  t_entry,
+                        "Exit":   t_exit if t_exit > 0 else None,
+                        "Lot":    t_lot,
+                        "PnL":    pnl_val,
+                        "Notes":  t_note,
+                    }])
+                    st.session_state.journal = pd.concat(
+                        [st.session_state.journal, new_row], ignore_index=True
+                    )
+                    st.session_state.journal.to_csv(JOURNAL_FILE, index=False)
+                    st.success(f"✅ Trade {t_ticker} tersimpan & sync ke Journal")
+                    st.rerun()
+
+    with acc_tab3:
+        st.subheader("💰 Modal & Rekonsiliasi")
+
+        col_m1, col_m2 = st.columns(2)
+        with col_m1:
+            new_modal = st.number_input(
+                "Modal Awal (Rp)",
+                min_value=100_000, step=100_000,
+                value=int(st.session_state.inv_modal),
+                key="inv_modal_input"
+            )
+            if st.button("💾 Update Modal"):
+                st.session_state.inv_modal  = int(new_modal)
+                st.session_state.balance    = int(new_modal)
+                save_state()
+                inv_save()
+                st.success("✅ Modal diperbarui")
+                st.rerun()
+
+        with col_m2:
+            st.markdown("**Risk Management**")
+            bal = st.session_state.inv_modal
+            st.metric("Risk/Trade (2%)",    inv_fmt_idr(bal * 0.02))
+            st.metric("Max 5 Posisi (40%)", inv_fmt_idr(bal * 0.40))
+            st.metric("Safe Cash (60%)",    inv_fmt_idr(bal * 0.60))
+
+        st.markdown("---")
+        st.subheader("📊 Rekonsiliasi")
+        rk1, rk2, rk3 = st.columns(3)
+        setor  = sum(m.get("jumlah", 0) for m in st.session_state.inv_mutasi if m.get("tipe") == "SETOR")
+        tarik  = sum(m.get("jumlah", 0) for m in st.session_state.inv_mutasi if m.get("tipe") == "TARIK")
+        biaya  = sum(m.get("jumlah", 0) for m in st.session_state.inv_mutasi if m.get("tipe") == "BIAYA")
+        rk1.metric("Total Setor",  inv_fmt_idr(setor))
+        rk2.metric("Total Tarik",  inv_fmt_idr(tarik))
+        rk3.metric("Total Biaya",  inv_fmt_idr(biaya))
+
+        st.markdown("---")
+        st.subheader("➕ Input Mutasi")
+        with st.form("inv_mutasi_form", clear_on_submit=True):
+            mc1, mc2, mc3 = st.columns(3)
+            with mc1:
+                m_tipe    = st.selectbox("Tipe", ["SETOR", "TARIK", "BIAYA"])
+            with mc2:
+                m_jumlah  = st.number_input("Jumlah (Rp)", min_value=0, step=10000)
+            with mc3:
+                m_ket     = st.text_input("Keterangan", placeholder="Setoran awal, komisi, dll")
+            if st.form_submit_button("Simpan Mutasi"):
+                st.session_state.inv_mutasi.append({
+                    "tipe":       m_tipe,
+                    "jumlah":     m_jumlah,
+                    "keterangan": m_ket,
+                    "date":       str(datetime.now(WIB).date()),
+                })
+                inv_save()
+                st.success("✅ Mutasi tersimpan")
+                st.rerun()
+
+    with acc_tab4:
+        st.subheader("🧠 Cybernetic Parameters")
+        params = st.session_state.cybernetic_params
+        cc1, cc2, cc3, cc4 = st.columns(4)
+        cc1.metric("Min Score",       params["min_score"])
+        cc2.metric("Execute Now Th.", params["execute_now_threshold"])
+        cc3.metric("Min RR",          params["min_rr"])
+        cc4.metric("Last Adjust",     str(params.get("last_adjust_date", "-")))
+        st.caption(f"⚙️ Cybernetic aktif setelah **{CYBER_CONFIG['min_trades_for_adjust']} trade** di journal.")
+
+        if params.get("adjustment_history"):
+            st.markdown("**Riwayat Penyesuaian:**")
+            st.dataframe(pd.DataFrame(params["adjustment_history"]).tail(10),
+                         use_container_width=True, hide_index=True)
 
 # ─────────────────────────────────────────────────────────────
 # TAB 3 — REPORT
@@ -5420,265 +5725,6 @@ with tabs[4]:
 # TAB 7 — 🎯 BANDAR HUNTER
 # ─────────────────────────────────────────────────────────────
 with tabs[5]:
-    from bandar_hunter import (
-        run_bandar_scan, bandar_hunter_job,
-        format_bandar_telegram, BandarSignal,
-        SIGNAL_EDUCATION, BANDAR_BASE_WATCHLIST,
-    )
-
-    st.markdown("## 🎯 Bandar Hunter — Institutional Movement Detector")
-    st.caption(
-        "Deteksi pergerakan institusional via anomali volume + price pada data 5 menit. "
-        "Input dari kandidat ATS scan hari ini. Bukan broker flow — ini adalah proxy."
-    )
-
-    # ── Jesse Livermore reminder ───────────────────────────────
-    st.info("""
-**📖 Metodologi: Jesse Livermore — Modernised**
-
-> *"There is nothing new in Wall Street. There can't be because speculation is as old as the hills. 
-> Whatever happens in the stock market today has happened before and will happen again."*
-> — Jesse Livermore, Reminiscences of a Stock Operator
-
-**Prinsip Livermore yang dipakai di sini:**
-- 🔊 **Volume adalah sidik jari bandar** — institusi tidak bisa menyembunyikan jejak mereka
-- 📈 **Pivot point + volume spike** = momen bandar mulai push harga (Initial Markup)
-- 🤫 **Akumulasi senyap** = bandar kumpul saham sebelum harga digerakkan
-- 🔴 **Distribusi** = bandar jual ke retail yang FOMO — sinyal berbahaya
-- ⏳ **"Big operators always tip their hand"** — baca jejaknya, ikuti gerakannya
-
-*Bandar Hunter adalah implementasi modern dari tape reading Livermore — 
-bukan intuisi, tapi data 5 menit yang dikuantifikasi.*
-    """)
-
-    st.markdown("---")
-    with st.expander("📚 Memahami Pergerakan Bandar — Baca Dulu", expanded=False):
-        st.markdown("""
-### Bagaimana Bandar Bergerak?
-
-Institusi / bandar tidak bisa membeli jutaan lembar saham sekaligus — 
-harga akan melonjak sendiri sebelum mereka selesai akumulasi. 
-Karena itu mereka bergerak dengan **pola yang bisa dideteksi**:
-
----
-
-#### 🔄 4 Fase Siklus Bandar (Wyckoff)
-
-| Fase | Nama | Ciri Volume | Ciri Harga | Aksi |
-|---|---|---|---|---|
-| 1 | **Akumulasi** | Naik perlahan, konsisten | Sideways, volatilitas rendah | Monitor — siapkan entry |
-| 2 | **Markup Awal** | Meledak tiba-tiba | Loncat impulsif, minim pullback | ⚡ Entry zone terbaik |
-| 3 | **Distribusi** | Naik tapi mulai turun | Harga masih naik/flat | ⚠️ Profit taking |
-| 4 | **Markdown** | Rendah atau spike sesaat | Turun konsisten | ❌ Jangan masuk |
-
----
-
-#### 🔍 Yang Bisa Dideteksi di Sini (Data 5 Menit)
-
-**⚡ Initial Markup** — Paling actionable
-> Volume meledak 4×+ dalam satu candle, harga loncat >1% dalam 15 menit, 
-> tidak ada pullback signifikan. Ini momen bandar mulai *push* harga.
-
-**🤫 Akumulasi Senyap** — Setup terbaik untuk entry
-> Volume di atas rata-rata 3-5 candle berturut-turut, harga bergerak 
-> sideways atau naik tipis. Bandar sedang *kumpulkan* saham diam-diam.
-
-**🔊 Volume Anomali** — Perlu konfirmasi arah
-> Volume ekstrem (5×+) tapi harga tidak bergerak. Bisa akumulasi, 
-> bisa distribusi. **Tunggu konfirmasi** sebelum aksi apapun.
-
-**🔴 Distribusi** — Sinyal waspada
-> Harga masih naik tapi volume mulai turun. Bandar sudah mulai *jual* 
-> ke retail yang FOMO. Hindari entry baru.
-
----
-
-#### ⚠️ Keterbatasan yang Harus Dipahami
-
-1. **Ini bukan data broker flow** — broker flow (RTI/Stockbit) tidak tersedia
-2. **False positive di saham tidak likuid** — spread lebar bisa memicu sinyal palsu
-3. **Selalu konfirmasi di D1** sebelum eksekusi — jangan trading hanya dari sinyal ini
-4. **Ini adalah alat deteksi, bukan rekomendasi beli/jual**
-        """)
-
-    st.markdown("---")
-
-    # ── Input ticker ───────────────────────────────────────────
-    col_inp1, col_inp2 = st.columns([2, 1])
-
-    with col_inp1:
-        # Auto-populate dari hasil scan ATS hari ini
-        ats_candidates = []
-        if ("scan_result" in st.session_state and
-                st.session_state.scan_result is not None and
-                not st.session_state.scan_result.empty):
-            ats_candidates = st.session_state.scan_result["Ticker"].tolist()[:8]
-
-        default_tickers = (
-            ", ".join(ats_candidates) if ats_candidates
-            else ", ".join(BANDAR_BASE_WATCHLIST)
-        )
-
-        bh_tickers_raw = st.text_input(
-            "📌 Ticker yang dipantau (pisahkan dengan koma)",
-            value=default_tickers,
-            help="Default: kandidat dari ATS scan hari ini. Edit sesuai kebutuhan."
-        )
-        bh_tickers = [t.strip().upper() for t in bh_tickers_raw.split(",") if t.strip()]
-
-    with col_inp2:
-        min_signal_filter = st.selectbox(
-            "Filter minimum sinyal",
-            options=["MARKUP_AWAL", "AKUMULASI_SENYAP", "VOLUME_ANOMALI", "NONE"],
-            index=1,
-            format_func=lambda x: {
-                "MARKUP_AWAL"     : "⚡ Initial Markup saja",
-                "AKUMULASI_SENYAP": "🤫 Akumulasi + Markup",
-                "VOLUME_ANOMALI"  : "🔊 Semua anomali",
-                "NONE"            : "😴 Semua (termasuk normal)",
-            }.get(x, x)
-        )
-
-    col_btn_bh1, col_btn_bh2, _ = st.columns([1, 1, 3])
-    with col_btn_bh1:
-        do_bh_scan = st.button("🎯 Scan Bandar Sekarang",
-                               type="primary", use_container_width=True)
-    with col_btn_bh2:
-        send_tg_bh = st.checkbox("Kirim Telegram", value=True,
-                                  key="bh_send_telegram")
-
-    # ── Run scan ──────────────────────────────────────────────
-    if do_bh_scan:
-        if not bh_tickers:
-            st.warning("Masukkan minimal 1 ticker.")
-        else:
-            _send_tg = st.session_state.get("bh_send_telegram", True)
-            bh_prog  = st.progress(0, text="🎯 Memulai Bandar Hunter scan...")
-            bh_ph    = st.empty()
-
-            def _bh_progress(i, n, tkr):
-                pct = int(i / n * 100) if n > 0 else 100
-                bh_prog.progress(pct, text=f"🎯 Scanning {tkr}... ({i}/{n})")
-
-            bh_results = run_bandar_scan(
-                tickers    = bh_tickers,
-                min_signal = min_signal_filter,
-                progress_cb= _bh_progress,
-            )
-            bh_prog.empty()
-
-            st.session_state["bh_results"]    = bh_results
-            st.session_state["bh_scan_time"]  = datetime.now(WIB).strftime("%H:%M WIB")
-            st.session_state["bh_tickers"]    = bh_tickers
-
-            actionable = [r for r in bh_results if r.is_actionable and not r.error]
-            if actionable:
-                if _send_tg:
-                    msg = format_bandar_telegram(actionable)
-                    if msg:
-                        ok = send_telegram(msg)
-                        if ok:
-                            bh_ph.success(
-                                f"🎯 Telegram terkirim — {len(actionable)} sinyal: "
-                                f"{', '.join(r.ticker for r in actionable)}"
-                            )
-                        else:
-                            bh_ph.error(
-                                f"🎯 {len(actionable)} sinyal ditemukan tapi Telegram GAGAL kirim. "
-                                "Cek Railway Variables."
-                            )
-                else:
-                    bh_ph.warning(
-                        f"⚠️ {len(actionable)} sinyal ditemukan tapi Telegram tidak dicentang."
-                    )
-            else:
-                bh_ph.info("🎯 Scan selesai — tidak ada sinyal actionable saat ini")
-
-    # ── Display results ───────────────────────────────────────
-    if "bh_results" in st.session_state and st.session_state.bh_results:
-        bh_results  = st.session_state["bh_results"]
-        bh_scantime = st.session_state.get("bh_scan_time", "-")
-
-        st.caption(f"Hasil scan terakhir: {bh_scantime} | {len(bh_results)} ticker dipantau")
-        st.markdown("---")
-
-        # ── Sinyal cards ───────────────────────────────────────
-        actionable = [r for r in bh_results if r.is_actionable and not r.error]
-        if actionable:
-            st.markdown("### 🚨 Sinyal Actionable")
-            for s in actionable:
-                edu = s.education
-                conf_color = {"HIGH": "🔴", "MEDIUM": "🟡", "LOW": "⚪"}
-                c_em = conf_color.get(s.confidence, "⚪")
-
-                with st.container(border=True):
-                    bh_c1, bh_c2, bh_c3, bh_c4 = st.columns([2, 1.5, 1.5, 2])
-                    bh_c1.markdown(f"### {edu['icon']} {s.ticker}")
-                    bh_c1.markdown(f"**{edu['label']}**")
-                    bh_c1.caption(f"{c_em} Confidence: {s.confidence}")
-                    bh_c2.metric("Harga", f"Rp {int(s.last_price):,}")
-                    bh_c2.metric("Vol Ratio", f"{s.vol_ratio:.1f}×")
-                    bh_c3.metric("Chg 3 candle", f"{s.price_chg_3c:+.2f}%")
-                    bh_c3.metric("Vol Trend", s.vol_trend)
-                    bh_c4.info(f"**Artinya:** {edu['arti']}")
-                    bh_c4.success(f"**Aksi:** {edu['aksi']}")
-
-                    with st.expander("📊 Detail + Edukasi"):
-                        d1, d2, d3 = st.columns(3)
-                        d1.markdown(f"**Pullback ratio:** {s.pullback:.2f}")
-                        d1.markdown(f"**Consec vol naik:** {s.consec_above} candle")
-                        d1.markdown(f"**FVG:** {'✅ Ada' if s.fvg else '❌ Tidak'}")
-                        d2.markdown(f"**Chg 1 candle:** {s.price_chg_1c:+.2f}%")
-                        d2.markdown(f"**Scan time:** {s.timestamp}")
-                        d3.warning(f"⚠️ **Risiko:** {edu['risiko']}")
-                        d3.markdown(f"**Pola:** {edu['pola']}")
-
-        # ── Full summary table ─────────────────────────────────
-        st.markdown("---")
-        st.markdown("### 📊 Semua Ticker yang Dipantau")
-
-        tbl_data = []
-        for s in bh_results:
-            edu = s.education
-            tbl_data.append({
-                "Ticker"    : s.ticker,
-                "Sinyal"    : f"{edu['icon']} {edu['label']}",
-                "Confidence": s.confidence,
-                "Harga"     : f"Rp {int(s.last_price):,}" if s.last_price else "-",
-                "Vol×"      : f"{s.vol_ratio:.1f}×",
-                "Chg 3C"    : f"{s.price_chg_3c:+.2f}%",
-                "Vol Trend" : s.vol_trend,
-                "Consec↑"   : s.consec_above,
-                "FVG"       : "✅" if s.fvg else "-",
-                "Pullback"  : f"{s.pullback:.2f}",
-                "Aksi"      : edu["aksi"] if s.is_actionable else "-",
-                "Error"     : s.error if s.error else "✅",
-            })
-
-        df_bh = pd.DataFrame(tbl_data)
-        st.dataframe(df_bh, use_container_width=True, hide_index=True)
-
-        # ── Legenda ────────────────────────────────────────────
-        st.markdown("---")
-        with st.expander("📖 Legenda Kolom", expanded=False):
-            st.markdown("""
-| Kolom | Penjelasan |
-|---|---|
-| **Vol×** | Rasio volume candle terakhir vs rata-rata 20 candle. >4× = anomali |
-| **Chg 3C** | Perubahan harga 3 candle (15 menit) terakhir |
-| **Vol Trend** | Apakah volume 5 candle terakhir NAIK, TURUN, atau FLAT |
-| **Consec↑** | Berapa candle berturut-turut volume di atas rata-rata |
-| **FVG** | Fair Value Gap — ada gap harga yang belum terisi |
-| **Pullback** | 0.0 = tidak ada pullback (bullish). 1.0 = full pullback (bearish) |
-| **Confidence** | HIGH = semua kondisi kuat. MEDIUM = sebagian. LOW = lemah |
-            """)
-
-st.divider()
-
-# ─────────────────────────────────────────────────────────────
-# TAB 8 — 🚀 BREAKOUT SCAN
-# ─────────────────────────────────────────────────────────────
-with tabs[6]:
     st.markdown("## 🚀 Breakout Yesterday High — ISSI Scanner")
     st.caption(
         "Scan otomatis setiap 15 menit jam 09:00–10:00 WIB. "
@@ -5861,212 +5907,7 @@ with tabs[6]:
                 st.success("✅ Telegram terkirim") if ok else st.error("❌ Telegram gagal")
 
 # ── TAB 9 — WISDOM ────────────────────────────────────────────
-with tabs[7]:
-    # ─────────────────────────────────────────────────────────────
-    # TAB 8 — 🗂️ STOCKBIT TRACKER (Bandar Hunter Manual)
-    # ─────────────────────────────────────────────────────────────
-    st.markdown("## 🗂️ Stockbit Screener Tracker")
-    st.caption(
-        "Catat hasil screening manual dari Stockbit. "
-        "Saham yang konsisten muncul di banyak screener = kandidat prioritas open posisi."
-    )
-
-    from config.universe import ISSI_UNIVERSE as _ISSI_RAW
-
-    _TICKERS_CLEAN = sorted([t.replace(".JK", "") for t in _ISSI_RAW])
-
-    _SCREENERS = [
-        {"key": "big_akum",         "label": "Big Akumulasi",      "color": "#00C896"},
-        {"key": "foreign_uptrend",  "label": "Foreign Uptrend",    "color": "#4DA6FF"},
-        {"key": "net_foreign_1m",   "label": "Net Foreign 1M",     "color": "#A78BFA"},
-        {"key": "hv_breakout",      "label": "High Vol Breakout",  "color": "#FB923C"},
-    ]
-
-    # ── Session state init ─────────────────────────────────────
-    if "sbt_date" not in st.session_state:
-        st.session_state.sbt_date = date.today()
-    if "sbt_data" not in st.session_state:
-        st.session_state.sbt_data = {}   # key: "YYYY-MM-DD_TICKER_screener_key"
-    if "sbt_notes" not in st.session_state:
-        st.session_state.sbt_notes = {}  # key: "YYYY-MM-DD_TICKER"
-
-    def _sbt_key(ticker, screener_key):
-        d = str(st.session_state.sbt_date)
-        return f"{d}_{ticker}_{screener_key}"
-
-    def _sbt_score(ticker):
-        return sum(1 for s in _SCREENERS if st.session_state.sbt_data.get(_sbt_key(ticker, s["key"]), False))
-
-    # ── Header bar ─────────────────────────────────────────────
-    col_d, col_exp = st.columns([2, 1])
-    with col_d:
-        new_date = st.date_input("📅 Tanggal Screening", value=st.session_state.sbt_date, key="sbt_date_input")
-        if new_date != st.session_state.sbt_date:
-            st.session_state.sbt_date = new_date
-            st.rerun()
-    with col_exp:
-        st.markdown("<br>", unsafe_allow_html=True)
-        # Export CSV
-        _rows = [["Ticker"] + [s["label"] for s in _SCREENERS] + ["Skor", "Notes"]]
-        for _t in _TICKERS_CLEAN:
-            _sc = _sbt_score(_t)
-            if _sc > 0:
-                _row = [_t]
-                for _s in _SCREENERS:
-                    _row.append("YES" if st.session_state.sbt_data.get(_sbt_key(_t, _s["key"]), False) else "")
-                _row.append(_sc)
-                _row.append(st.session_state.sbt_notes.get(f"{st.session_state.sbt_date}_{_t}", ""))
-                _rows.append(_row)
-        import io as _io
-        _csv_buf = _io.StringIO()
-        _csv_buf.write("\ufeff")  # BOM — supaya Excel baca UTF-8 dengan benar
-        for _r in _rows:
-            _csv_buf.write(",".join(f'"{str(x).replace(chr(34), chr(34)*2)}"' for x in _r) + "\n")
-        st.download_button(
-            "⬇️ Export CSV",
-            data=_csv_buf.getvalue(),
-            file_name=f"stockbit_scan_{st.session_state.sbt_date}.csv",
-            mime="text/csv;charset=utf-8",
-            use_container_width=True,
-        )
-
-    # ── Stats bar ──────────────────────────────────────────────
-    _detected  = sum(1 for t in _TICKERS_CLEAN if _sbt_score(t) > 0)
-    _score3    = sum(1 for t in _TICKERS_CLEAN if _sbt_score(t) == 3)
-    _score4    = sum(1 for t in _TICKERS_CLEAN if _sbt_score(t) == 4)
-    mc1, mc2, mc3 = st.columns(3)
-    mc1.metric("Terdeteksi", _detected)
-    mc2.metric("Skor 3 ⚡",  _score3)
-    mc3.metric("Skor 4 🔥",  _score4)
-
-    st.markdown("---")
-
-    # ── Tab: Input vs Watchlist ────────────────────────────────
-    sbt_tab1, sbt_tab2 = st.tabs(["📋 Input Screener", f"🚀 Watchlist Skor ≥ 3"])
-
-    with sbt_tab1:
-        # Filter row
-        fc1, fc2, fc3 = st.columns([2, 3, 1])
-        with fc1:
-            _search = st.text_input("🔍 Cari ticker", key="sbt_search", placeholder="BBRI, TLKM...").upper()
-        with fc2:
-            _min_score = st.radio("Min Skor", [0, 1, 2, 3, 4], horizontal=True, key="sbt_minscore")
-        with fc3:
-            st.markdown("<br>", unsafe_allow_html=True)
-            st.caption(f"{len(_TICKERS_CLEAN)} ticker ISSI")
-
-        _filtered = [t for t in _TICKERS_CLEAN
-                     if (_search in t or _search == "")
-                     and _sbt_score(t) >= _min_score]
-        _filtered_sorted = sorted(_filtered, key=lambda t: (-_sbt_score(t), t))
-
-        # Screener legend
-        leg_cols = st.columns(len(_SCREENERS))
-        for i, s in enumerate(_SCREENERS):
-            with leg_cols[i]:
-                st.markdown(
-                    f'<span style="background:{s["color"]}22;color:{s["color"]};'
-                    f'padding:3px 10px;border-radius:4px;font-size:12px;font-weight:600;">'
-                    f'{s["label"]}</span>',
-                    unsafe_allow_html=True
-                )
-
-        st.markdown("<br>", unsafe_allow_html=True)
-
-        # Table header
-        hdr = st.columns([1.5, 1, 1, 1, 1, 0.5, 2])
-        hdr[0].markdown("**Ticker**")
-        for i, s in enumerate(_SCREENERS):
-            hdr[i+1].markdown(f"**{s['label'][:6]}…**" if len(s['label']) > 6 else f"**{s['label']}**")
-        hdr[5].markdown("**Skor**")
-        hdr[6].markdown("**Notes**")
-
-        for _t in _filtered_sorted:
-            _score = _sbt_score(_t)
-            _cols  = st.columns([1.5, 1, 1, 1, 1, 0.5, 2])
-
-            # Ticker label — highlight kalau skor tinggi
-            _color = "#00C896" if _score >= 3 else ("#FB923C" if _score == 2 else "#94a3b8")
-            _cols[0].markdown(
-                f'<span style="color:{_color};font-weight:700;font-size:14px;">'
-                f'{"🔥 " if _score == 4 else ""}{_t}</span>',
-                unsafe_allow_html=True
-            )
-
-            for i, s in enumerate(_SCREENERS):
-                _k = _sbt_key(_t, s["key"])
-                _active = st.session_state.sbt_data.get(_k, False)
-                if _cols[i+1].checkbox(
-                    " ", value=_active,
-                    key=f"sbt_chk_{_t}_{s['key']}",
-                    label_visibility="collapsed"
-                ):
-                    st.session_state.sbt_data[_k] = True
-                else:
-                    st.session_state.sbt_data[_k] = False
-
-            # Skor badge
-            _badge_color = "#00C896" if _score == 4 else "#4DA6FF" if _score == 3 else "#FB923C" if _score == 2 else "#475569"
-            _cols[5].markdown(
-                f'<span style="color:{_badge_color};font-weight:700;font-size:15px;">'
-                f'{"" if _score == 0 else _score}</span>',
-                unsafe_allow_html=True
-            )
-
-            # Notes
-            _note_key = f"{st.session_state.sbt_date}_{_t}"
-            _note_val = st.session_state.sbt_notes.get(_note_key, "")
-            _new_note = _cols[6].text_input(
-                " ", value=_note_val,
-                key=f"sbt_note_{_t}",
-                placeholder="PA, level, SL...",
-                label_visibility="collapsed"
-            )
-            if _new_note != _note_val:
-                st.session_state.sbt_notes[_note_key] = _new_note
-
-    with sbt_tab2:
-        _watchlist = sorted(
-            [t for t in _TICKERS_CLEAN if _sbt_score(t) >= 3],
-            key=lambda t: (-_sbt_score(t), t)
-        )
-        if not _watchlist:
-            st.info("Belum ada saham dengan skor ≥ 3 hari ini. Isi dulu di tab Input Screener.")
-        else:
-            st.caption(f"📌 {len(_watchlist)} kandidat — konfirmasi Price Action sebelum open posisi")
-            wl_cols = st.columns(3)
-            for idx, _t in enumerate(_watchlist):
-                _sc = _sbt_score(_t)
-                _active_screeners = [s["label"] for s in _SCREENERS
-                                     if st.session_state.sbt_data.get(_sbt_key(_t, s["key"]), False)]
-                _note_txt = st.session_state.sbt_notes.get(f"{st.session_state.sbt_date}_{_t}", "")
-                _border_c = "#00C896" if _sc == 4 else "#4DA6FF"
-                with wl_cols[idx % 3]:
-                    with st.container(border=True):
-                        st.markdown(
-                            f'<div style="display:flex;justify-content:space-between;align-items:center;">'
-                            f'<span style="color:{_border_c};font-size:18px;font-weight:700;letter-spacing:2px;">'
-                            f'{"🔥 " if _sc == 4 else ""}{_t}</span>'
-                            f'<span style="color:{_border_c};font-weight:700;font-size:16px;">{_sc}/4</span>'
-                            f'</div>',
-                            unsafe_allow_html=True
-                        )
-                        # Screener badges
-                        _badge_html = " ".join(
-                            f'<span style="background:{s["color"]}22;color:{s["color"]};'
-                            f'padding:2px 8px;border-radius:3px;font-size:11px;margin:2px;">'
-                            f'{s["label"]}</span>'
-                            for s in _SCREENERS
-                            if st.session_state.sbt_data.get(_sbt_key(_t, s["key"]), False)
-                        )
-                        st.markdown(_badge_html, unsafe_allow_html=True)
-                        if _note_txt:
-                            st.caption(f"📝 {_note_txt}")
-
-    st.markdown("---")
-    st.caption("💡 Skor ≥ 3 = kandidat kuat. Tetap wajib konfirmasi Price Action D1 sebelum entry.")
-
-with tabs[8]:
+with tabs[6]:
     st.markdown("## 📚 Jesse Livermore — Wisdom & Vocabulary")
     st.caption(
         "Kutipan legendaris dari Reminiscences of a Stock Operator & How to Trade in Stocks. "
