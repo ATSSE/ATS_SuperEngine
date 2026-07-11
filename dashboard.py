@@ -5888,36 +5888,49 @@ with tabs[2]:
                                 line = line.strip()
                                 if not line: continue
                                 if "Trx Date" in line or "TrxDate" in line: continue
-                                if "===" in line or "---" in line: continue
+                                if line.startswith("=") or line.startswith("-"*5): continue
 
-                                # Support dua format:
-                                # 1. Tab-separated (copy dari web langsung)
-                                # 2. Space-separated dengan 2+ spasi (copy dari Qwen/rapi)
+                                # Support tab-separated dan space-separated (2+ spasi)
+                                import re as _re
                                 if "\t" in line:
                                     cols = line.split("\t")
                                 else:
-                                    import re as _re
-                                    cols = _re.split(r'\s{2,}', line)
+                                    cols = _re.split(r"\s{2,}", line)
 
-                                if len(cols) < 6: continue
+                                if len(cols) < 4: continue
 
                                 trx_date = parse_dt(cols[0])
                                 due_date  = parse_dt(cols[1]) if len(cols) > 1 else ""
                                 trx_desc  = cols[2].strip() if len(cols) > 2 else ""
 
-                                # "-" berarti kolom kosong (Deviden, Penarikan, dll)
-                                def get_col(idx):
-                                    if len(cols) <= idx: return None
-                                    v = cols[idx].strip()
-                                    if v in ("-", "", "—"): return None
-                                    return clean_num(v)
-
-                                price   = get_col(3)
-                                volume  = get_col(4)
-                                amount  = get_col(5)
-                                balance = get_col(6)
-                                days    = get_col(7)
-                                penalty = get_col(8)
+                                # IPOT format:
+                                # 9 kolom: TrxDate DueDate Desc Price Volume Amount Balance Days Penalty
+                                # 7 kolom: TrxDate DueDate Desc Amount Balance Days Penalty (Deviden/Penarikan/Biaya)
+                                # Deteksi: 9 kolom = ada Price & Volume, 7 kolom = tidak ada
+                                if len(cols) >= 9:
+                                    price   = clean_num(cols[3])
+                                    volume  = clean_num(cols[4])
+                                    amount  = clean_num(cols[5])
+                                    balance = clean_num(cols[6])
+                                    days    = clean_num(cols[7])
+                                    penalty = clean_num(cols[8])
+                                elif len(cols) >= 7:
+                                    # 7 kolom - tidak ada price & volume
+                                    price   = None
+                                    volume  = None
+                                    amount  = clean_num(cols[3])
+                                    balance = clean_num(cols[4])
+                                    days    = clean_num(cols[5])
+                                    penalty = clean_num(cols[6])
+                                elif len(cols) >= 6:
+                                    price   = clean_num(cols[3])
+                                    volume  = clean_num(cols[4])
+                                    amount  = clean_num(cols[5])
+                                    balance = None
+                                    days    = None
+                                    penalty = None
+                                else:
+                                    price = volume = amount = balance = days = penalty = None
 
                                 cat, ticker = categorize(trx_desc)
 
