@@ -3394,6 +3394,112 @@ def parse_ipot_pdf(pdf_bytes: bytes) -> pd.DataFrame:
     )
 
 
+def parse_ipot_text(text: str) -> pd.DataFrame:
+    """
+    Parse teks copy-paste dari mutasi rekening IPOT web.
+    Format kolom: TrxDate | DueDate | Transaction | Price | Volume | Amount | Balance | Days | Penalty
+    Contoh: '08 Jul 26  10 Jul 26  Pembelian Saham KLBF  735  1,900  -1,456,262  ...'
+    Return DataFrame dengan kolom: date, ticker, action, price, volume, amount
+    """
+    import re
+
+    rows = []
+    lines = text.strip().split('\n')
+
+    # Pattern tanggal: DD Mon YY atau DD Mon YYYY
+    date_pat   = re.compile(r'(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{2,4})', re.IGNORECASE)
+    # Pattern transaksi Buy/Sell
+    buy_pat    = re.compile(r'Pembelian\s+Saham\s+([A-Z]{2,5})', re.IGNORECASE)
+    sell_pat   = re.compile(r'Penjualan\s+Saham\s+([A-Z]{2,5})', re.IGNORECASE)
+
+    month_map = {
+        'jan': '01', 'feb': '02', 'mar': '03', 'apr': '04',
+        'may': '05', 'jun': '06', 'jul': '07', 'aug': '08',
+        'sep': '09', 'oct': '10', 'nov': '11', 'dec': '12'
+    }
+
+    def parse_date(s):
+        parts = s.strip().split()
+        if len(parts) == 3:
+            day = parts[0].zfill(2)
+            mon = month_map.get(parts[1].lower()[:3], '01')
+            yr  = parts[2]
+            if len(yr) == 2:
+                yr = '20' + yr
+            return f"{yr}-{mon}-{day}"
+        return ""
+
+    def clean_num(s):
+        """Bersihkan angka dari koma/titik ribuan"""
+        s = s.replace(',', '').replace(' ', '')
+        try:
+            return float(s)
+        except Exception:
+            return None
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+
+        # Skip baris header
+        if any(h in line for h in ['TrxDate', 'Transaction', 'Penalty']):
+            continue
+
+        # Cek apakah baris ini Buy atau Sell
+        buy_match  = buy_pat.search(line)
+        sell_match = sell_pat.search(line)
+
+        if not buy_match and not sell_match:
+            continue
+
+        action = "BUY"  if buy_match  else "SELL"
+        ticker = buy_match.group(1).upper() if buy_match else sell_match.group(1).upper()
+
+        # Cari tanggal pertama di baris (TrxDate)
+        dates = date_pat.findall(line)
+        trx_date = parse_date(dates[0]) if dates else ""
+
+        # Extract angka — ambil semua token numerik di baris
+        # Format baris: ... Pembelian Saham KLBF  735  1,900  -1,456,262  ...
+        # Setelah ticker, angka pertama = price, kedua = volume, ketiga = amount
+        # Cari posisi ticker dulu
+        ticker_pos = line.upper().find(ticker)
+        after_ticker = line[ticker_pos + len(ticker):]
+
+        # Extract semua angka (termasuk negatif)
+        num_tokens = re.findall(r'-?[\d,]+(?:\.\d+)?', after_ticker)
+        numbers = []
+        for t in num_tokens:
+            n = clean_num(t)
+            if n is not None:
+                numbers.append(n)
+
+        price  = numbers[0] if len(numbers) > 0 else None
+        volume = numbers[1] if len(numbers) > 1 else None
+        amount = numbers[2] if len(numbers) > 2 else None
+
+        # Validasi basic
+        if price and price < 0:
+            price = abs(price)
+        if volume and volume < 0:
+            volume = abs(volume)
+
+        rows.append({
+            "date":        trx_date,
+            "ticker":      ticker,
+            "action":      action,
+            "price":       price,
+            "volume":      volume,
+            "amount":      amount,
+            "description": line[:80],
+        })
+
+    return pd.DataFrame(rows) if rows else pd.DataFrame(
+        columns=["date", "ticker", "action", "price", "volume", "amount", "description"]
+    )
+
+
 def group_ipot_trades(df: pd.DataFrame) -> list:
     """
     Group transaksi Buy/Sell per ticker.
@@ -5692,169 +5798,332 @@ with tabs[2]:
                     st.rerun()
 
     with acc_tab3:
-        st.subheader("📥 Import Statement IPOT")
+        st.subheader("📥 Import Mutasi IPOT")
         st.caption(
-            "Upload PDF statement broker IPOT. Sistem akan parse semua transaksi Buy/Sell, "
-            "group by ticker, hitung rata-rata entry/exit dan PnL otomatis."
+            "Copy-paste semua baris dari halaman Mutasi Rekening IPOT (web/app). "
+            "Sistem akan parse semua transaksi: Pembelian, Penjualan, Deviden, WD, Setor, XRDN — "
+            "lalu tampilkan laporan keuangan lengkap dan trade log otomatis."
         )
 
-        if not PDF_AVAILABLE:
-            st.error("❌ Library `pdfplumber` belum terinstall. Tambahkan ke requirements.txt dan redeploy.")
-        else:
-            uploaded_pdf = st.file_uploader(
-                "Upload Statement IPOT (PDF)",
-                type=["pdf"],
-                key="ipot_pdf_upload",
-                help="File PDF dari menu Account Statement IPOT"
+        imp_tab1, imp_tab2 = st.tabs(["📋 Paste Mutasi", "📊 Laporan Keuangan"])
+
+        with imp_tab1:
+            st.markdown("**Cara:**")
+            st.markdown(
+                "1. Buka IPOT web → Account → Mutasi Rekening  \n"
+                "2. Pilih periode (bulan atau tahun)  \n"
+                "3. Select All → Copy → Paste di bawah ini  \n"
+                "4. Klik **Proses**"
             )
 
-            if uploaded_pdf is not None:
-                with st.spinner("🔍 Membaca PDF dan parsing transaksi..."):
-                    try:
-                        pdf_bytes = uploaded_pdf.read()
-                        raw_df    = parse_ipot_pdf(pdf_bytes)
+            mutasi_text = st.text_area(
+                "Paste data mutasi di sini",
+                height=250,
+                placeholder="Trx Date\tDue Date\tTransaction\tPrice\tVolume\tAmount\tBalance\tDays\tPenalty\n10 Jul 26\t10 Jul 26\tPlacement XRDN XRDN\t101.09\t1,657\t-167,502\t62\t0\t0\n...",
+                key="ipot_mutasi_text"
+            )
 
-                        if raw_df.empty:
-                            st.warning("Tidak ada transaksi Buy/Sell yang berhasil diparsing. Cek format PDF.")
-                        else:
-                            st.success(f"✅ Berhasil parse **{len(raw_df)} transaksi** dari PDF")
+            col_p1, col_p2 = st.columns(2)
+            with col_p1:
+                mutasi_label = st.text_input("Label periode (opsional)", placeholder="Jun 2026", key="mutasi_label")
+            with col_p2:
+                overwrite_mutasi = st.checkbox("Hapus data sebelumnya", value=False, key="mutasi_overwrite")
 
-                            # Tampilkan raw transaksi
-                            with st.expander("📄 Detail Transaksi Raw", expanded=False):
-                                st.dataframe(raw_df, use_container_width=True, hide_index=True)
+            if st.button("🔍 Proses Mutasi", type="primary", use_container_width=True, key="btn_proses_mutasi"):
+                if not mutasi_text.strip():
+                    st.warning("Paste data mutasi dulu.")
+                else:
+                    with st.spinner("Memproses..."):
+                        try:
+                            # Parse tab-separated
+                            import io
+                            lines = mutasi_text.strip().split("\n")
+                            parsed_rows = []
 
-                            # Group by ticker
-                            grouped = group_ipot_trades(raw_df)
+                            import re
+                            month_map = {
+                                "jan":"01","feb":"02","mar":"03","apr":"04",
+                                "may":"05","jun":"06","jul":"07","aug":"08",
+                                "sep":"09","oct":"10","nov":"11","dec":"12"
+                            }
 
-                            if not grouped:
-                                st.warning("Tidak ada pasangan Buy-Sell yang bisa digroup.")
+                            def parse_dt(s):
+                                s = s.strip()
+                                parts = s.split()
+                                if len(parts) == 3:
+                                    d = parts[0].zfill(2)
+                                    m = month_map.get(parts[1].lower()[:3], "01")
+                                    y = parts[2]
+                                    if len(y) == 2: y = "20" + y
+                                    return f"{y}-{m}-{d}"
+                                return s
+
+                            def clean_num(s):
+                                if not s or s.strip() == "": return None
+                                s = s.strip().replace(",", "").replace(" ", "")
+                                try: return float(s)
+                                except: return None
+
+                            def categorize(trx):
+                                trx = trx.strip()
+                                tl  = trx.lower()
+                                if "pembelian saham" in tl:
+                                    m = re.search(r"pembelian saham ([A-Z]{2,5})", trx, re.IGNORECASE)
+                                    return "BUY", m.group(1).upper() if m else ""
+                                elif "penjualan saham" in tl:
+                                    m = re.search(r"penjualan saham ([A-Z]{2,5})", trx, re.IGNORECASE)
+                                    return "SELL", m.group(1).upper() if m else ""
+                                elif "deviden" in tl:
+                                    m = re.search(r"deviden\s+\w+\s+([A-Z]{2,5})", trx, re.IGNORECASE)
+                                    return "DIVIDEN", m.group(1).upper() if m else ""
+                                elif "penarikan" in tl or "wd" in tl or "withdrawal" in tl:
+                                    return "TARIK", ""
+                                elif "receive payment" in tl or "setor" in tl or "deposit" in tl:
+                                    return "SETOR", ""
+                                elif "placement xrdn" in tl:
+                                    return "XRDN_IN", ""
+                                elif "liquidation xrdn" in tl:
+                                    return "XRDN_OUT", ""
+                                elif "biaya" in tl or "penalty" in tl:
+                                    return "BIAYA", ""
+                                else:
+                                    return "LAINNYA", ""
+
+                            for line in lines:
+                                line = line.strip()
+                                if not line: continue
+                                if "Trx Date" in line or "TrxDate" in line: continue
+
+                                cols = line.split("\t")
+                                if len(cols) < 6: continue
+
+                                trx_date = parse_dt(cols[0])
+                                due_date  = parse_dt(cols[1]) if len(cols) > 1 else ""
+                                trx_desc  = cols[2].strip() if len(cols) > 2 else ""
+                                price     = clean_num(cols[3]) if len(cols) > 3 else None
+                                volume    = clean_num(cols[4]) if len(cols) > 4 else None
+                                amount    = clean_num(cols[5]) if len(cols) > 5 else None
+                                balance   = clean_num(cols[6]) if len(cols) > 6 else None
+                                days      = clean_num(cols[7]) if len(cols) > 7 else None
+                                penalty   = clean_num(cols[8]) if len(cols) > 8 else None
+
+                                cat, ticker = categorize(trx_desc)
+
+                                parsed_rows.append({
+                                    "trx_date":  trx_date,
+                                    "due_date":  due_date,
+                                    "desc":      trx_desc,
+                                    "category":  cat,
+                                    "ticker":    ticker,
+                                    "price":     price,
+                                    "volume":    volume,
+                                    "amount":    amount,
+                                    "balance":   balance,
+                                    "days":      days,
+                                    "penalty":   penalty,
+                                    "label":     mutasi_label,
+                                })
+
+                            if not parsed_rows:
+                                st.warning("Tidak ada data yang berhasil diparsing. Pastikan format tab-separated.")
                             else:
-                                st.markdown(f"### 📊 Hasil Group — {len(grouped)} ticker")
+                                df_raw = pd.DataFrame(parsed_rows)
 
-                                # Tampilkan hasil grouped
-                                preview_rows = []
-                                for g in grouped:
-                                    preview_rows.append({
-                                        "Ticker":      g["ticker"],
-                                        "Tgl Entry":   g["date"],
-                                        "Avg Entry":   g["entry"],
-                                        "Avg Exit":    g["exit"] or "OPEN",
-                                        "Lot":         g["lot"],
-                                        "PnL Gross":   g["pnl_gross"],
-                                        "Est Komisi":  g["komisi_est"],
-                                        "PnL Net":     g["pnl_net"],
-                                        "Status":      g["status"],
-                                        "Keterangan":  g["note"],
-                                    })
+                                # Simpan ke session state
+                                if overwrite_mutasi:
+                                    st.session_state.inv_mutasi_raw = parsed_rows
+                                else:
+                                    existing = st.session_state.get("inv_mutasi_raw", [])
+                                    st.session_state.inv_mutasi_raw = existing + parsed_rows
 
-                                preview_df = pd.DataFrame(preview_rows)
-                                st.dataframe(
-                                    preview_df,
-                                    use_container_width=True,
-                                    hide_index=True,
-                                    column_config={
-                                        "Avg Entry":  st.column_config.NumberColumn(format="%.0f"),
-                                        "Avg Exit":   st.column_config.TextColumn(),
-                                        "PnL Gross":  st.column_config.NumberColumn("PnL Gross (Rp)", format="%.0f"),
-                                        "Est Komisi": st.column_config.NumberColumn("Komisi Est (Rp)", format="%.0f"),
-                                        "PnL Net":    st.column_config.NumberColumn("PnL Net (Rp)", format="%.0f"),
-                                    }
-                                )
+                                # Simpan ke file
+                                mutasi_file = "investor_mutasi.json"
+                                import json as _json
+                                with open(mutasi_file, "w") as f:
+                                    _json.dump(st.session_state.inv_mutasi_raw, f, default=str)
 
-                                # Summary
-                                total_pnl_import = sum(g["pnl_net"] for g in grouped if g["status"] != "OPEN")
-                                wins_import  = len([g for g in grouped if g["status"] == "WIN"])
-                                losses_import = len([g for g in grouped if g["status"] == "LOSS"])
-                                open_import  = len([g for g in grouped if g["status"] == "OPEN"])
+                                st.success(f"✅ {len(parsed_rows)} baris berhasil diproses!")
 
-                                im1, im2, im3, im4 = st.columns(4)
-                                im1.metric("Total PnL Net",  inv_fmt_idr(total_pnl_import),
-                                           delta_color="normal")
-                                im2.metric("Win",  wins_import)
-                                im3.metric("Loss", losses_import)
-                                im4.metric("Open", open_import)
+                                # Preview
+                                st.dataframe(df_raw[[
+                                    "trx_date","desc","category","ticker",
+                                    "price","volume","amount","balance"
+                                ]], use_container_width=True, hide_index=True)
 
-                                st.markdown("---")
-                                st.warning(
-                                    "⚠️ **Sebelum import:** pastikan data di atas sudah benar. "
-                                    "PnL dihitung via weighted average entry — kalau ada partial sell "
-                                    "atau averaging, cek angkanya manual dulu."
-                                )
+                                # Auto-extract trade log dari BUY/SELL
+                                buys  = [r for r in parsed_rows if r["category"] == "BUY"]
+                                sells = [r for r in parsed_rows if r["category"] == "SELL"]
 
-                                col_imp1, col_imp2 = st.columns(2)
-                                with col_imp1:
-                                    overwrite = st.checkbox(
-                                        "Hapus trade existing sebelum import",
-                                        value=False,
-                                        help="Centang kalau mau replace semua data. Tidak dicentang = append ke trade log yang ada."
-                                    )
-                                with col_imp2:
-                                    include_open = st.checkbox(
-                                        "Include posisi OPEN",
-                                        value=True,
-                                        help="Posisi yang belum di-close (buy volume > sell volume)"
-                                    )
+                                if buys or sells:
+                                    st.markdown("---")
+                                    st.markdown(f"**Trade terdeteksi:** {len(buys)} pembelian, {len(sells)} penjualan")
 
-                                if st.button("📥 Import ke Trade Log", type="primary", use_container_width=True):
-                                    import_list = grouped if include_open else [g for g in grouped if g["status"] != "OPEN"]
+                                    # Group by ticker untuk trade log
+                                    trade_df = pd.DataFrame(buys + sells)
+                                    grouped_trades = group_ipot_trades(trade_df.rename(columns={
+                                        "trx_date": "date", "category": "action"
+                                    }))
 
-                                    # Bersihkan field internal sebelum simpan
-                                    clean_trades = []
-                                    for g in import_list:
-                                        clean_trades.append({
+                                    if grouped_trades and st.button("📥 Import ke Trade Log", key="btn_import_from_mutasi"):
+                                        clean = [{
                                             "date":   g["date"],
                                             "ticker": g["ticker"],
                                             "entry":  g["entry"],
-                                            "sl":     g["sl"],
-                                            "tp":     g["tp"],
+                                            "sl":     0,
+                                            "tp":     0,
                                             "lot":    g["lot"],
                                             "exit":   g["exit"],
                                             "status": g["status"],
                                             "note":   g["note"],
-                                        })
+                                        } for g in grouped_trades]
 
-                                    if overwrite:
-                                        st.session_state.inv_trades = clean_trades
-                                    else:
-                                        # Hindari duplikat ticker yang sudah ada
-                                        existing_tickers = {t["ticker"] for t in st.session_state.inv_trades}
-                                        new_trades = [t for t in clean_trades if t["ticker"] not in existing_tickers]
-                                        st.session_state.inv_trades.extend(new_trades)
-                                        if len(new_trades) < len(clean_trades):
-                                            skipped = len(clean_trades) - len(new_trades)
-                                            st.info(f"ℹ️ {skipped} ticker dilewati karena sudah ada di trade log.")
+                                        existing_t = {t["ticker"] for t in st.session_state.inv_trades}
+                                        new_t = [t for t in clean if t["ticker"] not in existing_t]
+                                        st.session_state.inv_trades.extend(new_t)
+                                        inv_save()
+                                        st.success(f"✅ {len(new_t)} trade diimport ke Trade Log")
+                                        st.rerun()
 
-                                    # Sync ke journal ATS
-                                    new_rows = []
-                                    for t in clean_trades:
-                                        pnl_v = inv_calc_pnl(t)
-                                        new_rows.append({
-                                            "Date":   t["date"],
-                                            "Ticker": t["ticker"],
-                                            "Entry":  t["entry"],
-                                            "Exit":   t["exit"],
-                                            "Lot":    t["lot"],
-                                            "PnL":    pnl_v,
-                                            "Notes":  t["note"],
-                                        })
-                                    new_journal = pd.DataFrame(new_rows)
-                                    if overwrite:
-                                        st.session_state.journal = new_journal
-                                    else:
-                                        st.session_state.journal = pd.concat(
-                                            [st.session_state.journal, new_journal],
-                                            ignore_index=True
-                                        )
-                                    st.session_state.journal.to_csv(JOURNAL_FILE, index=False)
+                        except Exception as e:
+                            st.error(f"❌ Error: {e}")
 
-                                    inv_save()
-                                    st.success(f"✅ {len(clean_trades)} trade berhasil diimport ke Trade Log!")
-                                    st.rerun()
+        with imp_tab2:
+            st.subheader("📊 Laporan Keuangan")
 
-                    except Exception as e:
-                        st.error(f"❌ Gagal parse PDF: {e}")
-                        st.caption("Pastikan file adalah PDF statement IPOT yang valid.")
+            # Load data mutasi
+            mutasi_file = "investor_mutasi.json"
+            import json as _json
+            if "inv_mutasi_raw" not in st.session_state:
+                try:
+                    if os.path.exists(mutasi_file):
+                        with open(mutasi_file) as f:
+                            st.session_state.inv_mutasi_raw = _json.load(f)
+                    else:
+                        st.session_state.inv_mutasi_raw = []
+                except Exception:
+                    st.session_state.inv_mutasi_raw = []
 
+            all_mutasi = st.session_state.get("inv_mutasi_raw", [])
+
+            if not all_mutasi:
+                st.info("Belum ada data. Paste mutasi di tab **Paste Mutasi** dulu.")
+            else:
+                df_m = pd.DataFrame(all_mutasi)
+
+                # Filter periode
+                labels = sorted(set(r.get("label","") for r in all_mutasi if r.get("label","")))
+                labels = ["Semua"] + labels
+                sel_label = st.selectbox("Filter Periode", labels, key="lap_label_filter")
+
+                if sel_label != "Semua":
+                    df_m = df_m[df_m["label"] == sel_label]
+
+                if df_m.empty:
+                    st.warning("Tidak ada data untuk periode ini.")
+                else:
+                    # Hitung summary per kategori
+                    def sum_amt(cat):
+                        rows = df_m[df_m["category"] == cat]["amount"]
+                        return rows.sum() if not rows.empty else 0
+
+                    total_beli    = abs(sum_amt("BUY"))
+                    total_jual    = sum_amt("SELL")
+                    total_dividen = sum_amt("DIVIDEN")
+                    total_tarik   = abs(sum_amt("TARIK"))
+                    total_setor   = sum_amt("SETOR")
+                    total_biaya   = abs(sum_amt("BIAYA"))
+                    trading_pnl   = total_jual - total_beli
+                    saldo_akhir   = df_m["balance"].dropna().iloc[-1] if not df_m["balance"].dropna().empty else 0
+
+                    # KPI
+                    st.markdown("### 💰 Ringkasan Keuangan")
+                    r1c1, r1c2, r1c3, r1c4 = st.columns(4)
+                    r1c1.metric("Total Setor",   inv_fmt_idr(total_setor))
+                    r1c2.metric("Total Tarik",   inv_fmt_idr(total_tarik))
+                    r1c3.metric("Total Dividen", inv_fmt_idr(total_dividen))
+                    r1c4.metric("Total Biaya",   inv_fmt_idr(total_biaya))
+
+                    r2c1, r2c2, r2c3, r2c4 = st.columns(4)
+                    r2c1.metric("Total Pembelian", inv_fmt_idr(total_beli))
+                    r2c2.metric("Total Penjualan", inv_fmt_idr(total_jual))
+                    r2c3.metric("Trading PnL",     inv_fmt_idr(trading_pnl),
+                                delta_color="normal")
+                    r2c4.metric("Saldo Akhir",     inv_fmt_idr(saldo_akhir))
+
+                    st.markdown("---")
+
+                    # PnL per ticker
+                    st.markdown("### 📈 PnL per Saham")
+                    tickers = df_m[df_m["ticker"] != ""]["ticker"].unique()
+                    ticker_pnl = []
+                    for t in tickers:
+                        t_buy  = df_m[(df_m["ticker"] == t) & (df_m["category"] == "BUY")]
+                        t_sell = df_m[(df_m["ticker"] == t) & (df_m["category"] == "SELL")]
+                        buy_amt  = abs(t_buy["amount"].sum())  if not t_buy.empty  else 0
+                        sell_amt = t_sell["amount"].sum()       if not t_sell.empty else 0
+                        pnl      = sell_amt - buy_amt
+                        buy_vol  = t_buy["volume"].sum()        if not t_buy.empty  else 0
+                        sell_vol = t_sell["volume"].sum()       if not t_sell.empty else 0
+                        status   = "OPEN" if buy_vol > sell_vol else ("WIN" if pnl > 0 else "LOSS")
+                        ticker_pnl.append({
+                            "Ticker":      t,
+                            "Total Beli":  buy_amt,
+                            "Total Jual":  sell_amt,
+                            "PnL (Rp)":   pnl,
+                            "Status":      status,
+                        })
+
+                    if ticker_pnl:
+                        df_pnl = pd.DataFrame(ticker_pnl).sort_values("PnL (Rp)", ascending=False)
+                        st.dataframe(
+                            df_pnl,
+                            use_container_width=True,
+                            hide_index=True,
+                            column_config={
+                                "Total Beli": st.column_config.NumberColumn(format="Rp %.0f"),
+                                "Total Jual": st.column_config.NumberColumn(format="Rp %.0f"),
+                                "PnL (Rp)":  st.column_config.NumberColumn(format="Rp %.0f"),
+                            }
+                        )
+
+                    st.markdown("---")
+
+                    # Detail semua mutasi
+                    st.markdown("### 📋 Detail Mutasi")
+                    cat_filter = st.multiselect(
+                        "Filter Kategori",
+                        ["BUY","SELL","DIVIDEN","TARIK","SETOR","XRDN_IN","XRDN_OUT","BIAYA","LAINNYA"],
+                        default=["BUY","SELL","DIVIDEN","TARIK","SETOR"],
+                        key="mutasi_cat_filter"
+                    )
+                    df_detail = df_m[df_m["category"].isin(cat_filter)][[
+                        "trx_date","desc","category","ticker","price","volume","amount","balance"
+                    ]].copy()
+                    df_detail.columns = ["Tanggal","Keterangan","Kategori","Ticker","Harga","Volume","Amount","Saldo"]
+
+                    st.dataframe(df_detail, use_container_width=True, hide_index=True,
+                        column_config={
+                            "Amount": st.column_config.NumberColumn(format="Rp %.0f"),
+                            "Saldo":  st.column_config.NumberColumn(format="Rp %.0f"),
+                        }
+                    )
+
+                    # Download
+                    csv_exp = df_detail.to_csv(index=False).encode()
+                    st.download_button(
+                        "📥 Download Laporan (CSV)", csv_exp,
+                        file_name=f"laporan_mutasi_{sel_label.replace(' ','_')}.csv",
+                        mime="text/csv"
+                    )
+
+                    # Reset data
+                    if st.button("🗑️ Hapus Semua Data Mutasi", type="secondary"):
+                        st.session_state.inv_mutasi_raw = []
+                        import json as _json
+                        with open(mutasi_file, "w") as f:
+                            _json.dump([], f)
+                        st.success("Data mutasi dihapus")
+                        st.rerun()
     with acc_tab4:
         st.subheader("💰 Modal & Rekonsiliasi")
 
