@@ -5803,20 +5803,46 @@ with tabs[2]:
         imp_tab1, imp_tab2 = st.tabs(["📋 Paste Mutasi", "📊 Laporan Keuangan"])
 
         with imp_tab1:
-            st.markdown("**Cara:**")
+            st.markdown("**Cara pakai:**")
             st.markdown(
+                "**Opsi A — Upload File (Lebih Akurat):**  \n"
+                "1. Copy mutasi dari IPOT web  \n"
+                "2. Paste ke Qwen/ChatGPT: *'rapikan data ini jadi tabel rapi, jangan ubah angka'*  \n"
+                "3. Copy hasilnya → simpan ke file .txt → upload di sini  \n\n"
+                "**Opsi B — Paste Langsung:**  \n"
                 "1. Buka IPOT web → Account → Mutasi Rekening  \n"
-                "2. Pilih periode (bulan atau tahun)  \n"
-                "3. Select All → Copy → Paste di bawah ini  \n"
-                "4. Klik **Proses**"
+                "2. Pilih periode → Select All → Copy → Paste  \n"
+                "3. Klik **Proses**"
             )
 
-            mutasi_text = st.text_area(
-                "Paste data mutasi di sini",
-                height=250,
-                placeholder="Trx Date\tDue Date\tTransaction\tPrice\tVolume\tAmount\tBalance\tDays\tPenalty\n10 Jul 26\t10 Jul 26\tPlacement XRDN XRDN\t101.09\t1,657\t-167,502\t62\t0\t0\n...",
-                key="ipot_mutasi_text"
+            # Input method: upload file atau paste teks
+            input_method = st.radio(
+                "Metode Input",
+                ["📁 Upload File (.txt)", "📋 Paste Teks"],
+                horizontal=True,
+                key="mutasi_input_method"
             )
+
+            mutasi_text = ""
+            if input_method == "📁 Upload File (.txt)":
+                st.caption("Upload file .txt hasil export dari Qwen/Notepad. Format: fixed-width dengan spasi sebagai separator.")
+                uploaded_txt = st.file_uploader(
+                    "Upload file mutasi (.txt)",
+                    type=["txt"],
+                    key="mutasi_txt_upload"
+                )
+                if uploaded_txt is not None:
+                    mutasi_text = uploaded_txt.read().decode("utf-8", errors="ignore")
+                    st.success(f"✅ File '{uploaded_txt.name}' berhasil dibaca — {len(mutasi_text.splitlines())} baris")
+                    with st.expander("Preview 5 baris pertama"):
+                        st.code("\n".join(mutasi_text.splitlines()[:5]))
+            else:
+                mutasi_text = st.text_area(
+                    "Paste data mutasi di sini",
+                    height=200,
+                    placeholder="Copy dari IPOT web lalu paste di sini...",
+                    key="ipot_mutasi_text"
+                )
 
             col_p1, col_p2 = st.columns(2)
             with col_p1:
@@ -5826,7 +5852,7 @@ with tabs[2]:
 
             if st.button("🔍 Proses Mutasi", type="primary", use_container_width=True, key="btn_proses_mutasi"):
                 if not mutasi_text.strip():
-                    st.warning("Paste data mutasi dulu.")
+                    st.warning("Upload file atau paste data mutasi dulu.")
                 else:
                     with st.spinner("Memproses..."):
                         try:
@@ -5902,11 +5928,6 @@ with tabs[2]:
                                 due_date  = parse_dt(cols[1]) if len(cols) > 1 else ""
                                 trx_desc  = cols[2].strip() if len(cols) > 2 else ""
 
-                                # Deteksi jumlah kolom:
-                                # 9 kolom = ada Price & Volume (Pembelian/Penjualan/XRDN)
-                                # 7 kolom = tidak ada Price & Volume (Deviden/Penarikan/Biaya/Setor)
-                                # "-" atau kosong = nilai tidak ada
-
                                 def get_col(idx):
                                     if len(cols) <= idx: return None
                                     v = cols[idx].strip()
@@ -5921,7 +5942,6 @@ with tabs[2]:
                                     days    = get_col(7)
                                     penalty = get_col(8)
                                 elif len(cols) >= 7:
-                                    # Deviden/Penarikan/Biaya/Setor — tidak ada price & volume
                                     price   = None
                                     volume  = None
                                     amount  = get_col(3)
