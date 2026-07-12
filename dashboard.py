@@ -5194,8 +5194,8 @@ with tabs[1]:
         _equity_td = st.session_state.balance
         _risk_td   = st.session_state.balance * 0.02
 
-    r1c3.metric("Balance", inv_fmt_idr(_equity_td))
-    r1c4.metric("Risk/Trade", inv_fmt_idr(_risk_td))
+    r1c3.metric("Balance", f"Rp. {idr(int(_equity_td))}")
+    r1c4.metric("Risk/Trade", f"Rp. {idr(int(_risk_td))}")
     r1c5.metric("⚡ Intraday", f"{intra_n} ticker" if intra_n > 0 else "Offline")
     r1c6.metric("Next Scan", next_scan_label().split(" (")[0])
 
