@@ -5177,8 +5177,25 @@ with tabs[1]:
     r1c1, r1c2, r1c3, r1c4, r1c5, r1c6 = st.columns(6)
     r1c1.metric("Bursa", market_status)
     r1c2.metric("Regime", regime)
-    r1c3.metric("Balance", f"Rp {idr(st.session_state.balance)}")
-    r1c4.metric("Risk/Trade", f"Rp {idr(st.session_state.balance * 0.02)}")
+    # Balance dari mutasi IPOT kalau ada, fallback ke manual
+    _m_td = st.session_state.get("inv_mutasi_raw", [])
+    if _m_td:
+        _setor_td  = sum(float(r.get("amount",0) or 0) for r in _m_td if r.get("category") == "SETOR")
+        _tarik_td  = abs(sum(float(r.get("amount",0) or 0) for r in _m_td if r.get("category") == "TARIK"))
+        _modal_td  = _setor_td - _tarik_td
+        _porto_td  = float(st.session_state.get("nilai_porto", 0))
+        _bal_list  = [r.get("balance") for r in _m_td if r.get("balance") is not None]
+        _kas_td    = float(_bal_list[-1]) if _bal_list else _modal_td
+        _equity_td = _kas_td + _porto_td if _porto_td > 0 else _kas_td
+        _risk_td   = _equity_td * 0.02
+        # Sync ke session state
+        st.session_state.balance = int(_modal_td)
+    else:
+        _equity_td = st.session_state.balance
+        _risk_td   = st.session_state.balance * 0.02
+
+    r1c3.metric("Balance", inv_fmt_idr(_equity_td))
+    r1c4.metric("Risk/Trade", inv_fmt_idr(_risk_td))
     r1c5.metric("⚡ Intraday", f"{intra_n} ticker" if intra_n > 0 else "Offline")
     r1c6.metric("Next Scan", next_scan_label().split(" (")[0])
 
