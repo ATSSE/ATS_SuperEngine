@@ -5690,16 +5690,36 @@ with tabs[2]:
     rr_vals = [inv_calc_rr(t) for t in trades if inv_calc_rr(t)]
     avg_rr  = round(sum(rr_vals) / len(rr_vals), 1) if rr_vals else 0
 
-    k1, k2, k3, k4, k5, k6 = st.columns(6)
-    k1.metric("Modal (Net Setor)", inv_fmt_idr(_modal_kpi))
-    k2.metric("Equity",            inv_fmt_idr(_equity_kpi),
-              delta=inv_fmt_idr(_equity_kpi - _modal_kpi) if _modal_kpi > 0 else None,
-              delta_color="normal")
-    k3.metric("Kas Idle",          inv_fmt_idr(_kas_idle))
-    k4.metric("Dividen",           inv_fmt_idr(_dividen_kpi))
-    k5.metric("Win Rate (Log)",    f"{wr}%",
-              delta=f"{len(wins)}P / {len(losses)}L")
-    k6.metric("Avg RR",            f"{avg_rr}R")
+    # Hitung semua komponen dari mutasi
+    _setor_kpi   = sum(float(r.get("amount",0) or 0) for r in _all_m_kpi if r.get("category") == "SETOR")
+    _tarik_kpi   = abs(sum(float(r.get("amount",0) or 0) for r in _all_m_kpi if r.get("category") == "TARIK"))
+    _biaya_kpi   = abs(sum(float(r.get("amount",0) or 0) for r in _all_m_kpi if r.get("category") == "BIAYA"))
+    _penalty_kpi = abs(sum(float(r.get("penalty",0) or 0) for r in _all_m_kpi if r.get("penalty")))
+    _total_biaya = _biaya_kpi + _penalty_kpi
+    _nilai_porto = float(st.session_state.get("nilai_porto", 0))
+
+    # Row 1 — Modal
+    st.markdown("##### 💰 Modal")
+    r1a, r1b = st.columns(2)
+    r1a.metric("Total Modal Setor", inv_fmt_idr(_setor_kpi))
+    r1b.metric("Total Modal Tarik", inv_fmt_idr(_tarik_kpi))
+
+    # Row 2 — Posisi sekarang (tentatif)
+    st.markdown("##### 📊 Posisi Sekarang *(tentatif)*")
+    r2a, r2b = st.columns(2)
+    r2a.metric("Nilai Portofolio", inv_fmt_idr(_nilai_porto),
+               delta="dari IPOT app — input manual" if _nilai_porto > 0 else "⚠ Belum diisi")
+    r2b.metric("Kas Idle",        inv_fmt_idr(_kas_idle))
+
+    # Row 3 — PnL
+    st.markdown("##### 📈 Pendapatan & Biaya")
+    r3a, r3b, r3c = st.columns(3)
+    r3a.metric("Pendapatan Dividen", inv_fmt_idr(_dividen_kpi))
+    r3b.metric("Total Biaya",        inv_fmt_idr(_total_biaya),
+               delta=f"-{inv_fmt_idr(_total_biaya)}" if _total_biaya > 0 else None,
+               delta_color="inverse")
+    r3c.metric("Trading PnL",        inv_fmt_idr(_trading_pnl),
+               delta_color="normal")
 
     st.markdown("---")
 
