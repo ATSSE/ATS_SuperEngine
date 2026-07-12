@@ -4552,9 +4552,13 @@ header_html = (
 
 st.markdown(header_html, unsafe_allow_html=True)
 
-# ── Load investor_mutasi.json ke session state sekali di awal ────────────────
+# ── Load semua data investor ke session state di awal ────────────────────────
 import json as _json_startup
-_mutasi_startup_file = "investor_mutasi.json"
+_mutasi_startup_file  = "investor_mutasi.json"
+_trades_startup_file  = "investor_trades.json"
+_settings_startup_file = "investor_settings.json"
+
+# Load mutasi
 if "inv_mutasi_raw" not in st.session_state or not st.session_state.inv_mutasi_raw:
     try:
         if os.path.exists(_mutasi_startup_file):
@@ -4565,11 +4569,11 @@ if "inv_mutasi_raw" not in st.session_state or not st.session_state.inv_mutasi_r
     except Exception:
         st.session_state.inv_mutasi_raw = []
 
+# Load trades
 if "inv_trades" not in st.session_state:
-    _inv_trades_file = "investor_trades.json"
     try:
-        if os.path.exists(_inv_trades_file):
-            with open(_inv_trades_file) as _tf:
+        if os.path.exists(_trades_startup_file):
+            with open(_trades_startup_file) as _tf:
                 _inv_data = _json_startup.load(_tf)
                 st.session_state.inv_trades  = _inv_data.get("trades", [])
                 st.session_state.inv_modal   = _inv_data.get("modal", 6000000)
@@ -4578,6 +4582,18 @@ if "inv_trades" not in st.session_state:
             st.session_state.inv_trades = []
     except Exception:
         st.session_state.inv_trades = []
+
+# Load settings (nilai_porto)
+if "nilai_porto" not in st.session_state:
+    try:
+        if os.path.exists(_settings_startup_file):
+            with open(_settings_startup_file) as _stf:
+                _settings = _json_startup.load(_stf)
+                st.session_state.nilai_porto = _settings.get("nilai_porto", 0)
+        else:
+            st.session_state.nilai_porto = 0
+    except Exception:
+        st.session_state.nilai_porto = 0
 
 tabs = st.tabs(["📖 HOW TO USE", "📊 TRADING DESK", "💼 ACCOUNT", "📋 REPORT", "🕌 ISSI CHECK", "🚀 BREAKOUT SCAN", "📚 WISDOM"])
 
@@ -6293,6 +6309,20 @@ with tabs[2]:
             )
             if nilai_porto != st.session_state.get("nilai_porto", 0):
                 st.session_state.nilai_porto = nilai_porto
+                # Simpan ke file supaya persist
+                import json as _json_porto
+                _settings_file = "investor_settings.json"
+                try:
+                    _s = {}
+                    if os.path.exists(_settings_file):
+                        with open(_settings_file) as _sf:
+                            _s = _json_porto.load(_sf)
+                    _s["nilai_porto"] = nilai_porto
+                    with open(_settings_file, "w") as _sf:
+                        _json_porto.dump(_s, _sf)
+                except Exception:
+                    pass
+                st.rerun()
 
             equity_total = kas_idle + nilai_porto
             realized_pnl = sum(float(r.get("amount",0) or 0) for r in _all_m2 if r.get("category") == "SELL") -                            abs(sum(float(r.get("amount",0) or 0) for r in _all_m2 if r.get("category") == "BUY"))
