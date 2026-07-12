@@ -5594,30 +5594,52 @@ with tabs[2]:
 
     trades = st.session_state.inv_trades
 
-    # ── KPI STRIP ─────────────────────────────────────────────
+    # ── KPI STRIP — sumber dari mutasi IPOT ──────────────────
+    import json as _json_kpi2
+    _mutasi_file2 = "investor_mutasi.json"
+    _all_m_kpi = st.session_state.get("inv_mutasi_raw", [])
+    if not _all_m_kpi and os.path.exists(_mutasi_file2):
+        try:
+            with open(_mutasi_file2) as _f2:
+                _all_m_kpi = _json_kpi2.load(_f2)
+            st.session_state.inv_mutasi_raw = _all_m_kpi
+        except Exception:
+            _all_m_kpi = []
+
+    if _all_m_kpi:
+        _modal_kpi    = sum(float(r.get("amount",0) or 0) for r in _all_m_kpi if r.get("category") == "SETOR") -                         abs(sum(float(r.get("amount",0) or 0) for r in _all_m_kpi if r.get("category") == "TARIK"))
+        _dividen_kpi  = sum(float(r.get("amount",0) or 0) for r in _all_m_kpi if r.get("category") == "DIVIDEN")
+        _trading_pnl  = sum(float(r.get("amount",0) or 0) for r in _all_m_kpi if r.get("category") == "SELL") -                         abs(sum(float(r.get("amount",0) or 0) for r in _all_m_kpi if r.get("category") == "BUY"))
+        _balances_kpi = [r.get("balance") for r in _all_m_kpi if r.get("balance") is not None]
+        _kas_idle     = float(_balances_kpi[-1]) if _balances_kpi else 0
+    else:
+        _modal_kpi   = st.session_state.inv_modal
+        _dividen_kpi = 0
+        _trading_pnl = 0
+        _kas_idle    = st.session_state.inv_modal
+
+    # Equity = kas idle + nilai portofolio manual
+    _nilai_porto = float(st.session_state.get("nilai_porto", 0))
+    _equity_kpi  = _kas_idle + _nilai_porto if _nilai_porto > 0 else _kas_idle
+
     closed = [t for t in trades if t.get("status") != "OPEN"]
     wins   = [t for t in closed if t.get("status") == "WIN"]
     losses = [t for t in closed if t.get("status") == "LOSS"]
     open_t = [t for t in trades if t.get("status") == "OPEN"]
-
-    total_pnl = sum(inv_calc_pnl(t) or 0 for t in closed)
-    equity    = st.session_state.inv_modal + total_pnl
-    wr        = round(len(wins) / len(closed) * 100) if closed else 0
-    rr_vals   = [inv_calc_rr(t) for t in trades if inv_calc_rr(t)]
-    avg_rr    = round(sum(rr_vals) / len(rr_vals), 1) if rr_vals else 0
-    pnl_pct   = round(total_pnl / st.session_state.inv_modal * 100, 2) if st.session_state.inv_modal else 0
+    wr     = round(len(wins) / len(closed) * 100) if closed else 0
+    rr_vals = [inv_calc_rr(t) for t in trades if inv_calc_rr(t)]
+    avg_rr  = round(sum(rr_vals) / len(rr_vals), 1) if rr_vals else 0
 
     k1, k2, k3, k4, k5, k6 = st.columns(6)
-    k1.metric("Modal",       inv_fmt_idr(st.session_state.inv_modal))
-    k2.metric("Equity",      inv_fmt_idr(equity),
-              delta=f"{pnl_pct:+.2f}%",
+    k1.metric("Modal (Net Setor)", inv_fmt_idr(_modal_kpi))
+    k2.metric("Equity",            inv_fmt_idr(_equity_kpi),
+              delta=inv_fmt_idr(_equity_kpi - _modal_kpi) if _modal_kpi > 0 else None,
               delta_color="normal")
-    k3.metric("Total PnL",   inv_fmt_idr(total_pnl),
-              delta_color="normal")
-    k4.metric("Win Rate",    f"{wr}%",
+    k3.metric("Kas Idle",          inv_fmt_idr(_kas_idle))
+    k4.metric("Dividen",           inv_fmt_idr(_dividen_kpi))
+    k5.metric("Win Rate (Log)",    f"{wr}%",
               delta=f"{len(wins)}P / {len(losses)}L")
-    k5.metric("Avg RR",      f"{avg_rr}R")
-    k6.metric("Open",        len(open_t))
+    k6.metric("Avg RR",            f"{avg_rr}R")
 
     st.markdown("---")
 
@@ -6211,19 +6233,48 @@ with tabs[2]:
 
         with rm2:
             st.markdown("**📊 Hasil Kalkulasi**")
-            st.metric("Modal Aktif",        inv_fmt_idr(modal_rm),
-                      delta="Dari IPOT" if (_modal_ipot > 0 and not use_manual_modal) else "Manual")
-            st.metric(f"Risk/Trade ({risk_pct}%)",     inv_fmt_idr(modal_rm * risk_pct / 100))
-            st.metric(f"Max Posisi ({max_pos_pct}%)",  inv_fmt_idr(modal_rm * max_pos_pct / 100))
-            st.metric(f"Safe Cash ({safe_cash_pct}%)", inv_fmt_idr(modal_rm * safe_cash_pct / 100))
+
+            # Kas idle dari Balance akhir mutasi
+            _all_m2 = st.session_state.get("inv_mutasi_raw", [])
+            _balances2 = [r.get("balance") for r in _all_m2 if r.get("balance") is not None]
+            kas_idle = float(_balances2[-1]) if _balances2 else 0
+
+            # Input manual nilai portofolio dari IPOT app
+            nilai_porto = st.number_input(
+                "Nilai Portofolio Saham (dari IPOT app, Rp)",
+                min_value=0, step=100000,
+                value=int(st.session_state.get("nilai_porto", 0)),
+                key="rm_porto_input",
+                help="Buka IPOT app → Portfolio → Total nilai saham sekarang"
+            )
+            if nilai_porto != st.session_state.get("nilai_porto", 0):
+                st.session_state.nilai_porto = nilai_porto
+
+            equity_total = kas_idle + nilai_porto
+            realized_pnl = sum(float(r.get("amount",0) or 0) for r in _all_m2 if r.get("category") == "SELL") -                            abs(sum(float(r.get("amount",0) or 0) for r in _all_m2 if r.get("category") == "BUY"))
+
+            st.metric("Kas Idle (dari mutasi)",    inv_fmt_idr(kas_idle))
+            st.metric("Nilai Portofolio (manual)", inv_fmt_idr(nilai_porto))
+            st.metric("Equity Total",              inv_fmt_idr(equity_total),
+                      delta=inv_fmt_idr(equity_total - modal_rm) if modal_rm > 0 else None,
+                      delta_color="normal")
+            st.metric("Realized PnL",              inv_fmt_idr(realized_pnl),
+                      delta_color="normal")
+
+            st.markdown("---")
+            st.markdown("**⚖️ Risk Parameter**")
+            st.metric(f"Risk/Trade ({risk_pct}%)",     inv_fmt_idr(equity_total * risk_pct / 100 if equity_total > 0 else modal_rm * risk_pct / 100))
+            st.metric(f"Max Posisi ({max_pos_pct}%)",  inv_fmt_idr(equity_total * max_pos_pct / 100 if equity_total > 0 else modal_rm * max_pos_pct / 100))
+            st.metric(f"Safe Cash ({safe_cash_pct}%)", inv_fmt_idr(equity_total * safe_cash_pct / 100 if equity_total > 0 else modal_rm * safe_cash_pct / 100))
 
             st.markdown("---")
             st.markdown("**🎯 Kalkulasi Lot**")
             harga_saham = st.number_input("Harga Saham (Rp)", min_value=50, step=50, value=500, key="rm_harga")
-            max_lot  = int((modal_rm * max_pos_pct / 100 / 5) / (harga_saham * 100))
-            risk_lot = int((modal_rm * risk_pct / 100) / (harga_saham * 0.02 * 100))
-            st.metric("Max Lot (posisi tunggal)", f"{max(max_lot, 1)} lot")
-            st.metric("Lot berdasarkan Risk 2% SL", f"{max(risk_lot, 1)} lot")
+            base = equity_total if equity_total > 0 else modal_rm
+            max_lot  = int((base * max_pos_pct / 100 / 5) / (harga_saham * 100))
+            risk_lot = int((base * risk_pct / 100) / (harga_saham * 0.02 * 100))
+            st.metric("Max Lot (posisi tunggal)",   f"{max(max_lot, 1)} lot")
+            st.metric("Lot berdasarkan Risk % SL",  f"{max(risk_lot, 1)} lot")
     with acc_tab5:
         st.subheader("🧠 Cybernetic Parameters")
         params = st.session_state.cybernetic_params
