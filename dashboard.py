@@ -4552,6 +4552,33 @@ header_html = (
 
 st.markdown(header_html, unsafe_allow_html=True)
 
+# ── Load investor_mutasi.json ke session state sekali di awal ────────────────
+import json as _json_startup
+_mutasi_startup_file = "investor_mutasi.json"
+if "inv_mutasi_raw" not in st.session_state or not st.session_state.inv_mutasi_raw:
+    try:
+        if os.path.exists(_mutasi_startup_file):
+            with open(_mutasi_startup_file) as _sf:
+                st.session_state.inv_mutasi_raw = _json_startup.load(_sf)
+        else:
+            st.session_state.inv_mutasi_raw = []
+    except Exception:
+        st.session_state.inv_mutasi_raw = []
+
+if "inv_trades" not in st.session_state:
+    _inv_trades_file = "investor_trades.json"
+    try:
+        if os.path.exists(_inv_trades_file):
+            with open(_inv_trades_file) as _tf:
+                _inv_data = _json_startup.load(_tf)
+                st.session_state.inv_trades  = _inv_data.get("trades", [])
+                st.session_state.inv_modal   = _inv_data.get("modal", 6000000)
+                st.session_state.inv_mutasi  = _inv_data.get("mutasi", [])
+        else:
+            st.session_state.inv_trades = []
+    except Exception:
+        st.session_state.inv_trades = []
+
 tabs = st.tabs(["📖 HOW TO USE", "📊 TRADING DESK", "💼 ACCOUNT", "📋 REPORT", "🕌 ISSI CHECK", "🚀 BREAKOUT SCAN", "📚 WISDOM"])
 
 # ─────────────────────────────────────────────────────────────
