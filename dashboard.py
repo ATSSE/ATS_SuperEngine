@@ -26,6 +26,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
+from safe_yf import safe_download, verify_ticker_data
 from datetime import datetime, date, timedelta
 import time
 import os
@@ -71,6 +72,167 @@ TELEGRAM_TOKEN = _get_secret("TELEGRAM_TOKEN")
 TELEGRAM_CHAT  = _get_secret("TELEGRAM_CHAT")
 ACTIVE_FILE        = "active_trades.csv"
 LOG_FILE           = "ats.log"
+
+# ============================================================
+# MARTIN LUKE ANALYZER (NEW)
+# ============================================================
+class MartinLukeAnalyzer:
+    """Martin Luke Strategy - Pure Python"""
+    
+    def __init__(self, ticker, data):
+        self.ticker = ticker
+        self.data = data.copy()
+        self.current = data.iloc[-1]
+    
+    def calculate_ema(self, period):
+        return self.data['Close'].ewm(span=period, adjust=False).mean().iloc[-1]
+    
+    def get_analysis(self):
+        try:
+            ema9 = self.calculate_ema(9)
+            ema21 = self.calculate_ema(21)
+            ema50 = self.calculate_ema(50)
+            ema150 = self.calculate_ema(150)
+            
+            price = self.current['Close']
+            recent_low = self.data['Low'].tail(5).min()
+            avg_vol = self.data['Volume'].tail(20).mean()
+            
+            # TREND
+            uptrend = ema9 > ema21
+            
+            # PULLBACK
+            pullback_zone = (price >= ema21 - (ema21 * 0.02)) and (recent_low <= ema21)
+            recovering = price > ema21
+            pullback = pullback_zone and recovering
+            
+            # EXTENSION %
+            extension_pct = ((price - ema21) / ema21) * 100
+            
+            # VOLUME
+            vol_spike = self.current['Volume'] > avg_vol * 1.3
+            
+            # CONFLUENCE SCORE (0-5)
+            score = 0
+            if uptrend: score += 1
+            if pullback: score += 1
+            if abs(extension_pct) < 3: score += 1
+            if (price > ema50) and (ema50 > ema150): score += 1
+            if vol_spike: score += 1
+            
+            # VERDICT
+            if score >= 4:
+                verdict = "GO!"
+            elif score >= 3:
+                verdict = "MONITOR"
+            else:
+                verdict = "WAIT"
+            
+            # ACTION
+            if score >= 4 and uptrend:
+                action = "BUY"
+            elif score >= 3 and uptrend:
+                action = "MONITOR"
+            elif not uptrend:
+                action = "AVOID"
+            else:
+                action = "CAUTION"
+            
+            return {
+                'ticker': self.ticker,
+                'price': price,
+                'ema9': ema9,
+                'ema21': ema21,
+                'ema50': ema50,
+                'ema150': ema150,
+                'trend': 'UP' if uptrend else 'DOWN',
+                'pullback': pullback,
+                'extension_pct': extension_pct,
+                'vol_spike': vol_spike,
+                'confluence_score': score,
+                'verdict': verdict,
+                'action': action
+            }
+        
+        except Exception as e:
+            LOG.error(f"Error analyzing {self.ticker}: {str(e)}")
+            return None
+
+def format_martin_luke_telegram(analysis):
+    """Format Martin Luke alert untuk Telegram"""
+    msg = f"""
+<b>🎯 MARTIN LUKE ALERT</b>
+━━━━━━━━━━━━━━━━━━━━━━━
+
+<b>{analysis['ticker']}</b>
+💰 Price: {analysis['price']:.2f}
+📊 Score: <b>{analysis['confluence_score']}/5</b>
+📈 Verdict: <b>{analysis['verdict']}</b>
+🎬 Action: <b>{analysis['action']}</b>
+
+<b>SETUP:</b>
+• Trend: {analysis['trend']}
+• Pullback: {'✅ YES' if analysis['pullback'] else '❌ NO'}
+• Extension: {analysis['extension_pct']:.2f}%
+• Volume Spike: {'✅' if analysis['vol_spike'] else '❌'}
+
+<b>EMA:</b>
+• EMA9: {analysis['ema9']:.2f}
+• EMA21: {analysis['ema21']:.2f}
+• EMA50: {analysis['ema50']:.2f}
+"""
+    return msg
+
+def martin_luke_scan_job():
+    """Martin Luke Scanner - hanya ini yang jalan (ONLY)"""
+    try:
+        idx_stocks = [
+            "AALI.JK", "ACES.JK", "ADRO.JK", "AFLI.JK", "AGII.JK", "AGRO.JK", "AIRB.JK",
+            "AISA.JK", "ALDO.JK", "ALKA.JK", "ALLG.JK", "ALMA.JK", "ALMI.JK", "ALPP.JK",
+            "AMAG.JK", "AMAN.JK", "AMFG.JK", "AMID.JK", "AMRT.JK", "AMRX.JK", "ANDI.JK",
+            "ANGG.JK", "ANIK.JK", "ANTM.JK", "ANUV.JK", "APIC.JK", "APII.JK", "APLI.JK",
+            "APRO.JK", "ASII.JK", "ASIL.JK", "ASJT.JK", "ASPI.JK", "ASSA.JK", "ASTL.JK",
+            "ASXC.JK", "ATMU.JK", "ATOM.JK", "ATUR.JK", "AUAU.JK", "AUMA.JK", "AUTO.JK",
+            "AVIA.JK", "AVRO.JK", "AWID.JK", "AXIO.JK", "AYII.JK", "AYCH.JK", "AYOM.JK",
+            "AZRX.JK", "BAEK.JK", "BAFS.JK", "BAIL.JK", "BAJA.JK", "BAKU.JK", "BALL.JK",
+            "BALM.JK", "BAND.JK", "BANK.JK", "BAPL.JK", "BAPI.JK", "BAPS.JK", "BARA.JK",
+            "BBCA.JK", "BBKP.JK", "BBMD.JK", "BBNI.JK", "BBNP.JK", "BBRI.JK", "BBTN.JK",
+        ]
+        
+        LOG.info("=" * 80)
+        LOG.info(f"🔍 MARTIN LUKE SCANNER - {datetime.now(WIB).strftime('%Y-%m-%d %H:%M:%S')}")
+        LOG.info("=" * 80)
+        
+        alerts = []
+        
+        for ticker in idx_stocks:
+            try:
+                data = yf.download(ticker, period="200d", interval="1d", 
+                                 progress=False, timeout=10)
+                
+                if data.empty or len(data) < 50:
+                    continue
+                
+                analyzer = MartinLukeAnalyzer(ticker, data)
+                analysis = analyzer.get_analysis()
+                
+                # ONLY alert jika Score >= 3
+                if analysis and analysis['confluence_score'] >= 3:
+                    LOG.info(f"✅ {ticker} | Score: {analysis['confluence_score']}/5 | {analysis['verdict']}")
+                    alerts.append(analysis)
+                    
+                    # Send Telegram alert
+                    msg = format_martin_luke_telegram(analysis)
+                    send_telegram(msg)
+            
+            except Exception as e:
+                LOG.debug(f"Failed to scan {ticker}: {str(e)}")
+                continue
+        
+        LOG.info(f"📊 Scan complete: {len(alerts)} high-confluence stocks found")
+        
+    except Exception as e:
+        LOG.error(f"Martin Luke scan error: {str(e)}")
 
 # ============================================================
 # [Task 1] STRUCTURED LOGGING — ats.log
@@ -131,10 +293,70 @@ _telegram_lock = threading.Lock()
 # ============================================================
 # VERSION HISTORY
 # ============================================================
-APP_VERSION  = "V6.3.0"
-APP_UPDATED  = "11 Jul 2026"
+APP_VERSION  = "V6.5.4"
+APP_UPDATED  = "16 Jul 2026"
 
 VERSION_HISTORY = [
+    {
+        "versi":   "V6.5.4",
+        "tanggal": "17 Jul 2026",
+        "tipe":    "Hotfix — crash KeyError execute_now",
+        "ringkasan": "Efek samping V6.5.1: jalur 0-kandidat mengisi dynamic_thresholds dengan {'starvation': ...} (truthy), ROW-3 caption mengasumsikan key execute_now selalu ada -> KeyError line ~5634. Fix: guard 'execute_now' in th",
+        "detail": [],
+    },
+    {
+        "versi":   "V6.5.3",
+        "tanggal": "17 Jul 2026",
+        "tipe":    "Fix — Radar ARA pagi buta saat yfinance telat + heartbeat",
+        "ringkasan": "Kasus KOKA/BRIS 17 Jul lolos tanpa alert: guard data-basi men-skip ticker yang bar daily-nya belum terbit jam 09:32 (kejadian rutin pagi IDX) dan radar diam tanpa kabar. Fix: harga live fallback ke intraday 5m + heartbeat 1 baris saat 0 kandidat",
+        "detail": [
+            "[ARA] scan_radar_ara(): bar daily hari ini belum terbit -> ambil harga dari intraday 5m (MA20 & prev close tetap dari daily selesai)",
+            "[ARA] Heartbeat: 0 kandidat kirim 1 baris 'Radar pagi jalan - X dicek, Y skip' agar diam-nya app vs nihil-nya hasil bisa dibedakan",
+            "    Stats cek/telat masuk log untuk audit",
+        ],
+    },
+    {
+        "versi":   "V6.5.2",
+        "tanggal": "16 Jul 2026",
+        "tipe":    "UX — header Telegram bahasa manusia",
+        "ringkasan": "Tiga notif radar diganti judul yang menjelaskan dirinya sendiri: 'SUDAH TERBANG PAGI INI' (09:32), 'WATCHLIST BESOK PAGI' (16:15), 'CALON MELEDAK - BELUM JALAN' (16:30) + instruksi cara pakai 1-2 baris di tiap pesan",
+        "detail": [
+            "[UX] User bingung membedakan notif; sekarang tiap pesan bilang: ini apa, buat apa, langkah berikutnya",
+        ],
+    },
+    {
+        "versi":   "V6.5.1",
+        "tanggal": "16 Jul 2026",
+        "tipe":    "Fix — banner 'market tidak kondusif' diganti panel bukti",
+        "ringkasan": "Jalur nol-kandidat membuang hasil check_opportunity_starvation (return thresholds {}); UI hanya tampil vonis generik tanpa data. Sekarang: starvation info ikut di-return + banner menampilkan regime, status filter, dan top-3 alasan gugur",
+        "detail": [
+            "[FIX] scan_core jalur not candidates: starvation_zero disimpan ke thresholds['starvation'] (sebelumnya dihitung lalu dibuang)",
+            "[UI] Banner 0 kandidat: regime + status (STARVATION/TIGHT/...) + top reasons gugur + pointer ke Debug Log",
+            "    Rule audit: satu filter membunuh >50% universe berhari-hari = kandidat rekalibrasi, bukan 'market jelek'",
+        ],
+    },
+    {
+        "versi":   "V6.5.0",
+        "tanggal": "16 Jul 2026",
+        "tipe":    "Fitur + Cleanup — Coil Watch & hapus spam Near-Low",
+        "ringkasan": "Coil Watch 16:30 (screening pra-ledakan: akumulasi+kompresi sebelum markup) + Near-Low/Breakdown push alert dihapus dari intraday refresh (sumber spam Telegram)",
+        "detail": [
+            "[CW] scan_coil_watch(): ret20 -3..+7%, ATR5<0.7x ATR20, VolMA5<MA20, close>EMA50, <=8% di bawah BSL20d, ValMA20>=2 M",
+            "    Output DAFTAR TUNGGU + level BSL/SSL 20d siap jadi price alert; diam jika kosong",
+            "[NL] Near-Low alert (1 pesan/ticker tiap 15 mnt) DIHAPUS — breakdown scan manual di UI tetap ada",
+        ],
+    },
+    {
+        "versi":   "V6.4.0",
+        "tanggal": "16 Jul 2026",
+        "tipe":    "Fitur — Radar ARA 09:30",
+        "ringkasan": "Port screener Stockbit 'A. 09.30 Potensi ARA' ke scheduler: ISSI, return hari-H 5-15%, Value MA20 >= 2 M, Telegram berlabel RADAR (bukan sinyal beli)",
+        "detail": [
+            "[ARA] scan_radar_ara(): bar hari ini wajib ada (anti data basi), MA20 value dari 20 hari selesai",
+            "    verify_ticker_data sebelum alert (pola anti-ketuker RAJA/TLKM), diam jika hasil kosong",
+            "    Jadwal 09:32 WIB — offset dari Breakout Scan 09:30 agar tidak antre di lock safe_yf",
+        ],
+    },
     {
         "versi":   "V6.0.0",
         "tanggal": "10 Jul 2026",
@@ -1095,7 +1317,7 @@ def intraday_confirm(ticker: str) -> int:
         # [V6.0.0 #8] Retry 2x — yfinance 5m sering gagal transient di jam sibuk
         df5 = None
         for attempt in range(2):
-            df5 = yf.download(tickers=ticker, period="5d", interval="5m",
+            df5 = safe_download(tickers=ticker, period="5d", interval="5m",
                               progress=False, auto_adjust=True)
             if df5 is not None and len(df5) >= 10:
                 break
@@ -1592,7 +1814,7 @@ def load_market() -> dict[str, pd.DataFrame]:
         raw = None
         for attempt in range(MAX_RETRIES + 1):
             try:
-                raw = yf.download(
+                raw = safe_download(
                     tickers=batch, period="6mo", interval="1d",
                     group_by="ticker", progress=False, auto_adjust=True,
                     threads=True,
@@ -1663,7 +1885,7 @@ def _fetch_today_intraday_raw(tickers_tuple: tuple) -> dict:
         # [V6.0.0 #8] Retry 2x + fallback interval 15m — hilangkan silent fail
         raw = None
         for attempt in range(2):
-            raw = yf.download(
+            raw = safe_download(
                 tickers=list(tickers_tuple), period="1d", interval="5m",
                 group_by="ticker", progress=False, auto_adjust=True,
             )
@@ -1673,7 +1895,7 @@ def _fetch_today_intraday_raw(tickers_tuple: tuple) -> dict:
             time.sleep(2)
         if raw is None or raw.empty:
             LOG.warning("intraday 5m gagal total — fallback ke interval 15m")
-            raw = yf.download(
+            raw = safe_download(
                 tickers=list(tickers_tuple), period="1d", interval="15m",
                 group_by="ticker", progress=False, auto_adjust=True,
             )
@@ -2300,9 +2522,12 @@ def scan_core(market: dict, balance: float, top_n: int = 5,
         prog.empty()
 
     if not candidates:
-        # P6: Opportunity starvation check
-        check_opportunity_starvation(debug_log, total)
-        return pd.DataFrame(), pd.DataFrame(debug_log), {}, regime, sector_df
+        # P6: Opportunity starvation check — [V6.5.1] hasil diagnosa
+        # JANGAN dibuang di jalur nol kandidat: justru di hari inilah
+        # user butuh tahu filter mana yang membunuh semua ticker.
+        starvation_zero = check_opportunity_starvation(debug_log, total)
+        return (pd.DataFrame(), pd.DataFrame(debug_log),
+                {"starvation": starvation_zero}, regime, sector_df)
 
     # P6: Overfitting control
     starvation_info = check_opportunity_starvation(debug_log, total)
@@ -2590,7 +2815,7 @@ def auto_scan_background():
     send_telegram(f"🤖 ATS AutoScan dimulai — {now_label}")
 
     try:
-        raw = yf.download(
+        raw = safe_download(
             tickers=ISSI_UNIVERSE, period="6mo", interval="1d",
             group_by="ticker", progress=False, auto_adjust=True,
         )
@@ -2747,7 +2972,7 @@ def intraday_refresh_job():
 
     try:
         # Download bulk intraday terbaru — ringan karena hanya 1d/5m
-        raw5 = yf.download(
+        raw5 = safe_download(
             tickers=ISSI_UNIVERSE,
             period="1d", interval="5m",
             group_by="ticker", progress=False, auto_adjust=True,
@@ -2813,78 +3038,11 @@ def intraday_refresh_job():
             except Exception:
                 continue
 
-        # ── NEAR-LOW BATCH CHECK ─────────────────────────────
-        # Ambil daily data untuk semua ticker yang intraday px tersedia
-        # Cek: current_px <= low_kemarin * 1.005 (dalam 0.5% dari low kemarin)
-        # Threshold 0.5% dipilih karena:
-        # - Terlalu kecil (0.1%) → false alarm terus, noise spread IDX
-        # - Terlalu besar (2%) → sudah terlambat, harga sudah breakdown
-        # - 0.5% = zona support test yang actionable, masih ada waktu untuk antisipasi
-        now_label_nl = datetime.now(WIB).strftime("%H:%M WIB")
-        try:
-            raw_daily_nl = yf.download(
-                tickers=ISSI_UNIVERSE,
-                period="5d", interval="1d",
-                group_by="ticker", progress=False, auto_adjust=True,
-            )
-            if raw_daily_nl is not None and not raw_daily_nl.empty:
-                for tkr_nl in ISSI_UNIVERSE:
-                    try:
-                        # Ambil current price dari snapshot yang baru di-update
-                        with _spike_lock:
-                            cur_px_nl = _spike_state["last_prices"].get(tkr_nl, 0)
-                            already_near_low = tkr_nl in _spike_state["near_low_alerts"]
-
-                        if cur_px_nl <= 0 or already_near_low:
-                            continue
-
-                        # Ambil low kemarin dari daily data
-                        if len(ISSI_UNIVERSE) > 1:
-                            df_d = raw_daily_nl[tkr_nl].dropna()
-                        else:
-                            df_d = raw_daily_nl.dropna()
-
-                        if df_d is None or len(df_d) < 2:
-                            continue
-
-                        low_yesterday = float(df_d["Low"].squeeze().iloc[-2])
-                        if low_yesterday <= 0:
-                            continue
-
-                        # Hitung jarak harga saat ini ke low kemarin
-                        dist_to_low_pct = (cur_px_nl - low_yesterday) / low_yesterday * 100
-
-                        # Trigger: harga dalam 0.5% di atas low kemarin, atau sudah di bawahnya
-                        # Artinya: -0.5% ≤ dist ≤ 0.5%
-                        if -0.5 <= dist_to_low_pct <= 0.5:
-                            tkr_clean_nl = tkr_nl.replace(".JK", "")
-                            sector_nl    = get_sector(tkr_nl)
-                            status_tag   = "🔴 BREAKDOWN" if dist_to_low_pct < 0 else "⚠️ TEST SUPPORT"
-
-                            msg_nl = (
-                                f"🚨 NEAR LOW ALERT — ATS V{APP_VERSION}\n"
-                                f"{'━'*30}\n"
-                                f"📌 {tkr_clean_nl}  |  {sector_nl}\n"
-                                f"⏰ {now_label_nl}  |  🔄 Intraday Refresh\n\n"
-                                f"{status_tag}\n"
-                                f"Harga saat ini : Rp {idr(cur_px_nl)}\n"
-                                f"Low kemarin    : Rp {idr(low_yesterday)}\n"
-                                f"Jarak          : {dist_to_low_pct:+.2f}%\n\n"
-                                f"{'🔴 Harga SUDAH BREAKDOWN — Low kemarin ditembus!' if dist_to_low_pct < 0 else '⚠️ Harga MENDEKATI Low kemarin — zona support kritis!'}\n"
-                                f"{'━'*30}\n"
-                                f"❌ HINDARI BUY saat ini\n"
-                                f"Jika pegang posisi — evaluasi SL kamu.\n"
-                                f"⚠️ No FOMO. Tunggu konfirmasi arah."
-                            )
-                            send_telegram(msg_nl)
-                            with _spike_lock:
-                                _spike_state["near_low_alerts"].append(tkr_nl)
-                            LOG.info(f"near_low_alert sent: {tkr_clean_nl} px={cur_px_nl} low_yst={low_yesterday} dist={dist_to_low_pct:+.2f}%")
-
-                    except Exception:
-                        continue
-        except Exception:
-            pass   # Silent fail — near-low check tidak boleh crash intraday refresh
+        # ── [NL] NEAR-LOW / BREAKDOWN ALERT — DINONAKTIFKAN 16-Jul-2026 ──
+        # Alasan: 1 pesan Telegram PER TICKER per hari, jalan tiap 15 menit
+        # untuk seluruh universe ISSI → di hari merah bisa puluhan notif
+        # (sumber utama spam). Breakdown scan manual di tab UI tetap ada
+        # (on-demand via tombol) — yang dihapus hanya push otomatis ini.
 
         # Kalau ada spike candidate → trigger mini scan
         # [FIX #1] Baca regime dari state file (di-set oleh scan_core terakhir)
@@ -2923,7 +3081,7 @@ def mini_scan_spike(spike_candidates: list, regime: str = "SIDEWAYS"):
 
         try:
             # Download daily data untuk ticker ini saja
-            df_daily = yf.download(
+            df_daily = safe_download(
                 tickers=tkr_jk, period="6mo", interval="1d",
                 progress=False, auto_adjust=True
             )
@@ -2937,7 +3095,7 @@ def mini_scan_spike(spike_candidates: list, regime: str = "SIDEWAYS"):
             last_date  = pd.to_datetime(df_daily.index[-1]).date()
 
             # Ambil intraday detail untuk ticker ini
-            df5 = yf.download(
+            df5 = safe_download(
                 tickers=tkr_jk, period="1d", interval="5m",
                 progress=False, auto_adjust=True
             )
@@ -3112,7 +3270,7 @@ def scan_breakout_yesterday_high(universe: list) -> list:
 
     for ticker in universe:
         try:
-            df = yf.download(
+            df = safe_download(
                 ticker, period="7d", interval="1d",   # 7d biar dapat minimal 3 hari bursa
                 progress=False, auto_adjust=True,
             )
@@ -3187,7 +3345,7 @@ def scan_breakout_yesterday_low(universe: list) -> list:
 
     for ticker in universe:
         try:
-            df = yf.download(
+            df = safe_download(
                 ticker, period="7d", interval="1d",
                 progress=False, auto_adjust=True,
             )
@@ -3687,7 +3845,7 @@ def scan_macd_divergence(universe: list) -> list:
 
     for ticker in universe:
         try:
-            df = yf.download(
+            df = safe_download(
                 ticker, period="90d", interval="1d",
                 progress=False, auto_adjust=True,
             )
@@ -3863,7 +4021,7 @@ def scan_vwap_ema_signal(universe: list) -> list:
 
     for ticker in universe:
         try:
-            df = yf.download(
+            df = safe_download(
                 ticker, period="60d", interval="1d",
                 progress=False, auto_adjust=True,
             )
@@ -3964,9 +4122,18 @@ def scan_vwap_ema_signal(universe: list) -> list:
             if bullish_candle:  score += 10
             if macd_bull:       score += 5
 
+            # [FIX 13-Jul-2026] Verifikasi anti-data-ketuker:
+            # fetch ulang & cocokkan harga SEBELUM sinyal boleh dikirim.
+            if grade in ("A+", "A", "B"):
+                ok_v, actual_c, info_v = verify_ticker_data(ticker, c_last)
+                if not ok_v:
+                    LOG.warning(f"vwap_ema_scan | {ticker} | SINYAL DIBUANG — {info_v}")
+                    continue
+
             results.append({
                 "ticker":       ticker.replace(".JK", ""),
                 "harga":        round(c_last, 0),
+                "data_date":    df.index[-1].date().isoformat(),
                 "ema9":         round(e_last, 0),
                 "vwap":         round(v_last, 0),
                 "grade":        grade,
@@ -4015,10 +4182,11 @@ def format_vwap_ema_telegram(results: list, label: str = "") -> str:
         macd_tag = "MACD▲" if r["macd_bull"] else "MACD▼"
         zero_tag = "ZERO+" if r["macd_zero"] else "ZERO-"
         cross_tag = "CROSS✓" if r["bull_cross"] else "HOLD"
+        data_tag = f"Data: {r.get('data_date', '?')}"
         lines.append(
             f"{em} {r['ticker']}  [{r['grade']}]  Score:{r['score']}\n"
             f"   Harga {r['harga']:,.0f}  EMA9 {r['ema9']:,.0f}  VWAP {r['vwap']:,.0f}\n"
-            f"   {cross_tag} | {vol_tag} | {obv_tag} | {macd_tag} {zero_tag}"
+            f"   {cross_tag} | {vol_tag} | {obv_tag} | {macd_tag} {zero_tag} | {data_tag}"
         )
 
     lines.append(
@@ -4060,159 +4228,527 @@ def _breakout_job(label: str = ""):
 
 
 # ============================================================
+# [DR] Displacement Radar — deteksi impulse post-close (16:15)
+# Tujuan: memasukkan saham ke RADAR/watchlist, BUKAN sinyal beli.
+# Latar: impulse INDF 2-Jul-2026 baru dikenali 11 hari kemudian.
+# Kriteria displacement valid (semua wajib):
+#   1) change hari ini > +2.5%
+#   2) volume > 1.5x rata-rata 20 hari
+#   3) close di 25% teratas range hari itu (bukan spike yang dijual)
+#   4) close > high 10 hari sebelumnya (break struktur)
+# ============================================================
+def scan_displacement(universe: list) -> list:
+    results = []
+    for ticker in universe:
+        try:
+            df = safe_download(ticker, period="60d", interval="1d",
+                               progress=False, auto_adjust=True)
+            if df is None or len(df) < 25:
+                continue
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            df = df.dropna(subset=["Close"])
+            if len(df) < 25:
+                continue
+
+            h, l, c = (float(df["High"].iloc[-1]),
+                       float(df["Low"].iloc[-1]),
+                       float(df["Close"].iloc[-1]))
+            v      = float(df["Volume"].iloc[-1])
+            prev_c = float(df["Close"].iloc[-2])
+            if prev_c <= 0:
+                continue
+
+            chg = (c / prev_c - 1) * 100
+            if chg <= 2.5:
+                continue
+            vma20 = float(df["Volume"].iloc[-21:-1].mean())
+            if vma20 <= 0 or v < 1.5 * vma20:
+                continue
+            rng = h - l
+            if rng <= 0 or (c - l) / rng < 0.75:
+                continue
+            hi10 = float(df["High"].iloc[-11:-1].max())
+            if c <= hi10:
+                continue
+
+            # verifikasi anti-data-ketuker sebelum masuk hasil
+            ok_v, _actual, info_v = verify_ticker_data(ticker, c)
+            if not ok_v:
+                LOG.warning(f"displacement_radar | {ticker} | DIBUANG — {info_v}")
+                continue
+
+            results.append({
+                "ticker":    ticker.replace(".JK", ""),
+                "harga":     round(c),
+                "chg":       round(chg, 2),
+                "vol_x":     round(v / vma20, 1),
+                "clv":       round((c - l) / rng * 100),
+                "data_date": df.index[-1].date().isoformat(),
+            })
+        except Exception as e:
+            LOG.warning(f"displacement_radar | {ticker} | {type(e).__name__}: {e}")
+    results.sort(key=lambda r: r["chg"], reverse=True)
+    return results
+
+
+def format_displacement_telegram(results: list) -> str:
+    now = datetime.now(WIB).strftime("%d %b %Y %H:%M WIB")
+    head = f"⚡ WATCHLIST BESOK PAGI — {now}\n" + "━" * 20
+    if not results:
+        return head + "\nTidak ada displacement hari ini."
+    lines = [head,
+             f"{len(results)} saham MELEDAK HARI INI → potensi lanjutan/ARA besok.",
+             "Ini daftar pantau besok pagi — BUKAN perintah beli.",
+             "Cara pakai: cek broksum sponsornya malam ini, tandain zona",
+             "pullback di chart, pasang alarm harga. Beli hanya kalau",
+             "harga balik ke zona (retrace → FVG → MSS 15M).", ""]
+    for r in results:
+        harga = f"{r['harga']:,}".replace(",", ".")
+        lines.append(f"  {r['ticker']}  +{r['chg']}%  Harga {harga}")
+        lines.append(f"    Vol {r['vol_x']}x | Close {r['clv']}% atas range | Data: {r['data_date']}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+_displacement_last: dict = {"results": [], "ts": None}
+
+def _displacement_job():
+    """Job scheduler — radar impulse post-close + kirim Telegram."""
+    if not is_trading_day():
+        return
+    results = scan_displacement(ISSI_UNIVERSE)
+    send_telegram(format_displacement_telegram(results))
+    with _state_lock:
+        _displacement_last["results"] = results
+        _displacement_last["ts"]      = datetime.now(WIB).strftime("%H:%M WIB")
+    LOG.info(f"_displacement_job | radar={len(results)}")
+
+
+# ============================================================
+# [ARA] Radar ARA 09:30 — port dari Stockbit "A. 09.30 Screener Potensi ARA"
+# Rules: universe ISSI | return hari ini >5% dan <15% | Value MA20 >= 2 M
+# Output: RADAR, BUKAN SINYAL BELI (rule sendiri: impulse hari-H = radar,
+# entry tetap lewat pullback → FVG → MSS 15M).
+# Catatan data: yfinance delay ±15-20 mnt → scan 09:32 membaca ~09:10-09:15.
+# Value MA20 = mean(Close x Volume) 20 hari SELESAI (bar hari ini dibuang).
+# ============================================================
+RADAR_ARA_MIN_RET   = 5.0
+RADAR_ARA_MAX_RET   = 15.0
+RADAR_ARA_MIN_VAL20 = 2_000_000_000
+RADAR_ARA_MAX_ROWS  = 8
+
+def scan_radar_ara(universe: list):
+    """Return (results, stats). stats = {"cek": n_dicek, "telat": n_skip_data}.
+    [V6.5.3] Harga live hybrid: bar daily hari ini KALAU sudah terbit;
+    kalau yfinance telat (sering di pagi IDX), fallback ke intraday 5m.
+    Sebelumnya ticker langsung di-skip → radar buta persis di jam tugasnya."""
+    today   = datetime.now(WIB).date()
+    results = []
+    stats   = {"cek": 0, "telat": 0}
+    for ticker in universe:
+        try:
+            df = safe_download(ticker, period="60d", interval="1d",
+                               progress=False, auto_adjust=True)
+            if df is None or len(df) < 22:
+                continue
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            df = df.dropna(subset=["Close"])
+            if len(df) < 22:
+                continue
+
+            if df.index[-1].date() == today:
+                hist   = df.iloc[:-1]          # bar hari ini dibuang dari MA
+                live_c = float(df["Close"].iloc[-1])
+            else:
+                hist   = df                    # daily belum terbit hari ini
+                live_c = None
+
+            if len(hist) < 21:
+                continue
+            prev_c = float(hist["Close"].iloc[-1])
+            if prev_c <= 0:
+                continue
+            stats["cek"] += 1
+
+            # fallback intraday 5m untuk harga live
+            if live_c is None:
+                try:
+                    di = safe_download(ticker, period="1d", interval="5m",
+                                       progress=False, auto_adjust=True)
+                    if di is not None and len(di) > 0:
+                        if isinstance(di.columns, pd.MultiIndex):
+                            di.columns = di.columns.get_level_values(0)
+                        dc = di["Close"].dropna()
+                        if len(dc) > 0:
+                            live_c = float(dc.iloc[-1])
+                except Exception:
+                    pass
+            if live_c is None:
+                stats["telat"] += 1
+                continue
+
+            chg = (live_c / prev_c - 1) * 100
+            if not (RADAR_ARA_MIN_RET < chg < RADAR_ARA_MAX_RET):
+                continue
+
+            val20 = float((hist["Close"].tail(20) * hist["Volume"].tail(20)).mean())
+            if val20 < RADAR_ARA_MIN_VAL20:
+                continue
+
+            # verifikasi anti-data-ketuker sebelum masuk hasil
+            ok_v, _actual, info_v = verify_ticker_data(ticker, live_c)
+            if not ok_v:
+                LOG.warning(f"radar_ara | {ticker} | DIBUANG — {info_v}")
+                continue
+
+            results.append({
+                "ticker": ticker.replace(".JK", ""),
+                "harga":  round(live_c),
+                "chg":    round(chg, 2),
+                "val20":  round(val20 / 1e9, 1),
+                "data_date": today.isoformat(),
+            })
+        except Exception as e:
+            LOG.warning(f"radar_ara | {ticker} | {type(e).__name__}: {e}")
+    results.sort(key=lambda r: r["chg"], reverse=True)
+    return results, stats
+
+
+def format_radar_ara_telegram(results: list) -> str:
+    now  = datetime.now(WIB).strftime("%d %b %Y %H:%M WIB")
+    head = f"🚨 SUDAH TERBANG PAGI INI — {now}\n" + "━" * 20
+    lines = [head,
+             f"{len(results)} saham naik 5–15% pagi ini (radar ARA).",
+             "Ini info 'siapa yang lagi lari' — BUKAN perintah beli/kejar.",
+             "Kalau ada yang menarik: tunggu dia balik (pullback) dulu.", ""]
+    for r in results[:RADAR_ARA_MAX_ROWS]:
+        harga = f"{r['harga']:,}".replace(",", ".")
+        lines.append(f"  {r['ticker']}  +{r['chg']}%  Harga {harga}  "
+                     f"| ValMA20 {r['val20']} M")
+    if len(results) > RADAR_ARA_MAX_ROWS:
+        lines.append(f"  … +{len(results) - RADAR_ARA_MAX_ROWS} lainnya (lihat log)")
+    lines += ["", "Next: cek panel (sweep/FVG) + broksum siapa yang dorong."]
+    return "\n".join(lines)
+
+
+_radar_ara_last: dict = {"results": [], "ts": None}
+
+def _radar_ara_job():
+    """Job scheduler — radar potensi ARA pagi + kirim Telegram."""
+    if not is_trading_day():
+        return
+    results, stats = scan_radar_ara(ISSI_UNIVERSE)
+    if results:
+        send_telegram(format_radar_ara_telegram(results))
+    else:
+        # [V6.5.3] Heartbeat — diam total itu ambigu (scan jalan tapi nihil,
+        # atau app mati?). Satu baris ini yang membedakannya.
+        now = datetime.now(WIB).strftime("%H:%M WIB")
+        send_telegram(
+            f"🚨 Radar pagi jalan ({now}) — 0 kandidat lolos.\n"
+            f"{stats['cek']} ticker dicek, {stats['telat']} skip (data telat)."
+        )
+    with _state_lock:
+        _radar_ara_last["results"] = results
+        _radar_ara_last["ts"]      = datetime.now(WIB).strftime("%H:%M WIB")
+    LOG.info(f"_radar_ara_job | radar={len(results)} | cek={stats['cek']} telat={stats['telat']}")
+
+
+# ============================================================
+# [CW] Coil Watch — screening PRA-ledakan, post-close 16:30
+# Cari fase akumulasi/kompresi SEBELUM markup (kebalikan Radar ARA):
+#   1) belum jalan: return 20 hari antara -3% s/d +7%
+#   2) coil: ATR5 < 0.7x ATR20 (range menyempit)
+#   3) volume kering: Vol MA5 < Vol MA20
+#   4) uptrend context: close > EMA50 daily
+#   5) dekat pemicu: close maks 8% di bawah BSL 20d (high 20 hari)
+#   6) likuid: Value MA20 >= 2 M
+# Output: DAFTAR TUNGGU — aksi satu-satunya: pasang price alert di BSL/SSL.
+# Kandidat wajar nginep berhari-hari; sebagian besar tidak akan meledak.
+# ============================================================
+COIL_RET20_MIN   = -3.0
+COIL_RET20_MAX   = 7.0
+COIL_ATR_RATIO   = 0.70
+COIL_BSL_DIST_MAX = 8.0
+COIL_MIN_VAL20   = 2_000_000_000
+COIL_MAX_ROWS    = 8
+
+def _atr_series(df: "pd.DataFrame", n: int) -> float:
+    hi, lo, cl = df["High"], df["Low"], df["Close"]
+    prev_c = cl.shift(1)
+    tr = pd.concat([(hi - lo),
+                    (hi - prev_c).abs(),
+                    (lo - prev_c).abs()], axis=1).max(axis=1)
+    val = tr.tail(n).mean()
+    return float(val) if pd.notna(val) else 0.0
+
+def scan_coil_watch(universe: list) -> list:
+    today   = datetime.now(WIB).date()
+    results = []
+    for ticker in universe:
+        try:
+            df = safe_download(ticker, period="6mo", interval="1d",
+                               progress=False, auto_adjust=True)
+            if df is None or len(df) < 60:
+                continue
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            df = df.dropna(subset=["Close"])
+            if len(df) < 60 or df.index[-1].date() != today:
+                continue   # bar hari ini wajib ada — post-close
+
+            c = float(df["Close"].iloc[-1])
+            c20 = float(df["Close"].iloc[-21])
+            if c20 <= 0:
+                continue
+            ret20 = (c / c20 - 1) * 100
+            if not (COIL_RET20_MIN <= ret20 <= COIL_RET20_MAX):
+                continue
+
+            atr5, atr20 = _atr_series(df, 5), _atr_series(df, 20)
+            if atr20 <= 0 or atr5 / atr20 >= COIL_ATR_RATIO:
+                continue
+
+            vma5  = float(df["Volume"].tail(5).mean())
+            vma20 = float(df["Volume"].tail(20).mean())
+            if vma20 <= 0 or vma5 >= vma20:
+                continue
+
+            ema50 = float(df["Close"].ewm(span=50, adjust=False).mean().iloc[-1])
+            if c <= ema50:
+                continue
+
+            bsl20 = float(df["High"].tail(20).max())
+            dist_bsl = (bsl20 / c - 1) * 100
+            if dist_bsl > COIL_BSL_DIST_MAX:
+                continue
+            ssl20 = float(df["Low"].tail(20).min())
+
+            val20 = float((df["Close"].tail(20) * df["Volume"].tail(20)).mean())
+            if val20 < COIL_MIN_VAL20:
+                continue
+
+            ok_v, _actual, info_v = verify_ticker_data(ticker, c)
+            if not ok_v:
+                LOG.warning(f"coil_watch | {ticker} | DIBUANG — {info_v}")
+                continue
+
+            results.append({
+                "ticker":   ticker.replace(".JK", ""),
+                "harga":    round(c),
+                "ret20":    round(ret20, 1),
+                "atr_r":    round(atr5 / atr20, 2),
+                "vol_r":    round(vma5 / vma20, 2),
+                "bsl":      round(bsl20),
+                "dist_bsl": round(dist_bsl, 1),
+                "ssl":      round(ssl20),
+                "val20_m":  round(val20 / 1e9, 1),
+            })
+        except Exception as e:
+            LOG.warning(f"coil_watch | {ticker} | {type(e).__name__}: {e}")
+    # paling ketat coil-nya duluan
+    results.sort(key=lambda r: r["atr_r"])
+    return results
+
+
+def format_coil_watch_telegram(results: list) -> str:
+    now  = datetime.now(WIB).strftime("%d %b %Y %H:%M WIB")
+    head = f"🧲 CALON MELEDAK (BELUM JALAN) — {now}\n" + "━" * 20
+    lines = [head,
+             f"{len(results)} saham yang harganya masih diam tapi tanda-tanda",
+             "'lagi diisi' sudah muncul. Ini daftar TUNGGU — bukan beli.",
+             "Cara pakai: pasang alarm di harga BSL tiap saham di bawah.",
+             "Alarm bunyi = dia mulai jalan, baru dilirik.", ""]
+    for r in results[:COIL_MAX_ROWS]:
+        harga = f"{r['harga']:,}".replace(",", ".")
+        bsl   = f"{r['bsl']:,}".replace(",", ".")
+        ssl   = f"{r['ssl']:,}".replace(",", ".")
+        lines.append(f"  {r['ticker']}  {harga}  ret20 {r['ret20']:+.1f}%")
+        lines.append(f"    Coil: ATR5 {r['atr_r']}x ATR20 | Vol kering: MA5 {r['vol_r']}x MA20")
+        lines.append(f"    {r['dist_bsl']}% di bawah BSL20d {bsl} | SSL20d {ssl} | ValMA20 {r['val20_m']} M")
+        lines.append("")
+    if len(results) > COIL_MAX_ROWS:
+        lines.append(f"  … +{len(results) - COIL_MAX_ROWS} lainnya (lihat log)")
+    lines += ["Next: pasang price alert di BSL & SSL tiap ticker.",
+              "Kandidat bisa nginep di list ini berhari-hari — itu normal."]
+    return "\n".join(lines)
+
+
+_coil_watch_last: dict = {"results": [], "ts": None}
+
+def _coil_watch_job():
+    """Job scheduler — coil watch post-close + kirim Telegram."""
+    if not is_trading_day():
+        return
+    results = scan_coil_watch(ISSI_UNIVERSE)
+    if results:                       # diam kalau kosong
+        send_telegram(format_coil_watch_telegram(results))
+    with _state_lock:
+        _coil_watch_last["results"] = results
+        _coil_watch_last["ts"]      = datetime.now(WIB).strftime("%H:%M WIB")
+    LOG.info(f"_coil_watch_job | kandidat={len(results)}")
+
+
+# ============================================================
 @st.cache_resource
 def start_scheduler():
     scheduler = BackgroundScheduler(timezone=WIB)
 
-    # ── Full scan 5x sehari ──────────────────────────────────
-    for sched in SCAN_SCHEDULE:
-        scheduler.add_job(
-            func=auto_scan_background,
-            trigger=CronTrigger(day_of_week="mon-fri",
-                                hour=sched["hour"], minute=sched["minute"],
-                                timezone=WIB),
-            id=f"scan_{sched['label'].replace(' ', '_')}",
-            name=f"ATS Scan {sched['label']}",
-            replace_existing=True, misfire_grace_time=120,
-        )
+    # ════════════════════════════════════════════════════════════════════
+    # OLD SCANNERS DISABLED (24 Aug 2026) - REPLACED WITH MARTIN LUKE ONLY
+    # ════════════════════════════════════════════════════════════════════
+    # Disabled: Full scan, Intraday refresh, Displacement Radar, Radar ARA,
+    #           Coil Watch, Breakout, MACD Div, VWAP+EMA
+    # Reason: Keep only Martin Luke scanner (cleaner, fewer alerts)
+    # ════════════════════════════════════════════════════════════════════
 
-    # ── Intraday refresh setiap 15 menit jam 09:05–15:30 ────
-    # Ringan: hanya download 5m data + deteksi spike
-    # Tidak full scan — jauh lebih hemat resource
+    # # ── Full scan 5x sehari ──────────────────────────────────
+    # for sched in SCAN_SCHEDULE:
+    #     scheduler.add_job(
+    #         func=auto_scan_background,
+    #         trigger=CronTrigger(day_of_week="mon-fri",
+    #                             hour=sched["hour"], minute=sched["minute"],
+    #                             timezone=WIB),
+    #         id=f"scan_{sched['label'].replace(' ', '_')}",
+    #         name=f"ATS Scan {sched['label']}",
+    #         replace_existing=True, misfire_grace_time=120,
+    #     )
+
+    # # ── Intraday refresh setiap 15 menit jam 09:05–15:30 ────
+    # scheduler.add_job(
+    #     func=intraday_refresh_job,
+    #     trigger=CronTrigger(
+    #         day_of_week="mon-fri",
+    #         hour="9-15",
+    #         minute="5,20,35,50",
+    #         timezone=WIB,
+    #     ),
+    #     id="intraday_refresh",
+    #     name="ATS Intraday Refresh 15min",
+    #     replace_existing=True,
+    #     misfire_grace_time=60,
+    # )
+
+    # # [V5.6] Cleanup scan logs
+    # scheduler.add_job(
+    #     func=lambda: cleanup_old_scan_logs(days_to_keep=30),
+    #     trigger=CronTrigger(hour=16, minute=0, timezone=WIB),
+    #     id="cleanup_scan_logs",
+    #     name="ATS Cleanup Scan Logs > 30 hari",
+    #     replace_existing=True,
+    #     misfire_grace_time=300,
+    # )
+
+    # # [DR] Displacement Radar
+    # scheduler.add_job(
+    #     func=_displacement_job,
+    #     trigger=CronTrigger(day_of_week="mon-fri", hour=16, minute=15, timezone=WIB),
+    #     id="displacement_radar",
+    #     name="ATS Displacement Radar Post-Close",
+    #     replace_existing=True,
+    #     misfire_grace_time=300,
+    # )
+
+    # # [ARA] Radar ARA
+    # scheduler.add_job(
+    #     func=_radar_ara_job,
+    #     trigger=CronTrigger(day_of_week="mon-fri", hour=9, minute=32, timezone=WIB),
+    #     id="radar_ara_0930",
+    #     name="ATS Radar ARA 09:30",
+    #     replace_existing=True,
+    #     misfire_grace_time=120,
+    # )
+
+    # # [CW] Coil Watch
+    # scheduler.add_job(
+    #     func=_coil_watch_job,
+    #     trigger=CronTrigger(day_of_week="mon-fri", hour=16, minute=30, timezone=WIB),
+    #     id="coil_watch",
+    #     name="ATS Coil Watch Post-Close",
+    #     replace_existing=True,
+    #     misfire_grace_time=300,
+    # )
+
+    # # [BO] Breakout Scanner
+    # _breakout_schedule = [
+    #     {"hour": 9,  "minute": 0,  "label": "09:00 Open"},
+    #     {"hour": 9,  "minute": 15, "label": "09:15"},
+    #     {"hour": 9,  "minute": 30, "label": "09:30"},
+    #     {"hour": 9,  "minute": 45, "label": "09:45"},
+    #     {"hour": 10, "minute": 0,  "label": "10:00 Konfirmasi"},
+    # ]
+    # for bs in _breakout_schedule:
+    #     scheduler.add_job(
+    #         func    = lambda lbl=bs["label"]: _breakout_job(lbl),
+    #         trigger = CronTrigger(day_of_week="mon-fri", hour=bs["hour"], minute=bs["minute"], timezone=WIB),
+    #         id               = f"breakout_{bs['hour']:02d}{bs['minute']:02d}",
+    #         name             = f"Breakout Scan {bs['label']}",
+    #         replace_existing = True,
+    #         misfire_grace_time = 60,
+    #     )
+
+    # # [MACD DIV] Scan
+    # _div_schedule = [
+    #     {"hour": 8,  "minute": 30, "label": "08:30 Pre-Market"},
+    #     {"hour": 15, "minute": 45, "label": "15:45 Post-Close"},
+    # ]
+    # for ds in _div_schedule:
+    #     scheduler.add_job(
+    #         func    = lambda lbl=ds["label"]: _macd_div_job(lbl),
+    #         trigger = CronTrigger(day_of_week="mon-fri", hour=ds["hour"], minute=ds["minute"], timezone=WIB),
+    #         id               = f"macd_div_{ds['hour']:02d}{ds['minute']:02d}",
+    #         name             = f"MACD Div Scan {ds['label']}",
+    #         replace_existing = True,
+    #         misfire_grace_time = 120,
+    #     )
+
+    # # [VWAP+EMA] Signal scan
+    # _vwap_schedule = [
+    #     {"hour": 8,  "minute": 45, "label": "08:45 Pre-Market"},
+    #     {"hour": 11, "minute": 45, "label": "11:45 Mid-Session"},
+    #     {"hour": 15, "minute": 30, "label": "15:30 Post-Close"},
+    # ]
+    # for vs in _vwap_schedule:
+    #     scheduler.add_job(
+    #         func    = lambda lbl=vs["label"]: _vwap_ema_job(lbl),
+    #         trigger = CronTrigger(day_of_week="mon-fri", hour=vs["hour"], minute=vs["minute"], timezone=WIB),
+    #         id               = f"vwap_ema_{vs['hour']:02d}{vs['minute']:02d}",
+    #         name             = f"VWAP+EMA Scan {vs['label']}",
+    #         replace_existing = True,
+    #         misfire_grace_time = 120,
+    #     )
+
+    # ════════════════════════════════════════════════════════════════════
+    # MARTIN LUKE SCANNER (NEW - ACTIVE)
+    # ════════════════════════════════════════════════════════════════════
     scheduler.add_job(
-        func=intraday_refresh_job,
+        func=martin_luke_scan_job,
         trigger=CronTrigger(
             day_of_week="mon-fri",
-            hour="9-15",          # jam 09:00 sampai 15:00
-            minute="5,20,35,50",  # menit ke 5, 20, 35, 50 → setiap 15 menit
+            hour="9-15",
+            minute="5,20,35,50",
             timezone=WIB,
         ),
-        id="intraday_refresh",
-        name="ATS Intraday Refresh 15min",
+        id="martin_luke_scan",
+        name="Martin Luke Scanner (Every 15 min)",
         replace_existing=True,
-        misfire_grace_time=60,
+        misfire_grace_time=120,
     )
-
-    # [V5.6] Cleanup scan logs lama setiap hari jam 16:00 WIB
-    scheduler.add_job(
-        func=lambda: cleanup_old_scan_logs(days_to_keep=30),
-        trigger=CronTrigger(hour=16, minute=0, timezone=WIB),
-        id="cleanup_scan_logs",
-        name="ATS Cleanup Scan Logs > 30 hari",
-        replace_existing=True,
-        misfire_grace_time=300,
-    )
-
-    # [BH] Bandar Hunter — scan otomatis setiap 15 menit
-    # Universe: ATS candidates (kalau ada) + base watchlist tetap
-    # Tidak tergantung output ATS — radar independen
-    from bandar_hunter import bandar_hunter_job, BANDAR_BASE_WATCHLIST
-    def _bandar_hunter_auto():
-        try:
-            _st = load_state()
-            # Ambil ATS candidates dari state terakhir (bisa kosong)
-            ats_tickers = _st.get("last_scan_tickers", [])[:8]
-        except Exception:
-            ats_tickers = []
-        bandar_hunter_job(
-            ats_tickers    = ats_tickers,
-            send_telegram_fn = send_telegram,
-        )
-
-    scheduler.add_job(
-        func    = _bandar_hunter_auto,
-        trigger = CronTrigger(
-            day_of_week    = "mon-fri",
-            hour           = "9-14",
-            minute         = "10,25,40,55",  # versetzt 5 menit dari intraday refresh
-            timezone       = WIB,
-        ),
-        id               = "bandar_hunter_auto",
-        name             = "ATS Bandar Hunter 15min",
-        replace_existing = True,
-        misfire_grace_time = 60,
-    )
-
-    # ── [V5.8.0] Breakout Yesterday High — scan per 15 menit 09:00–10:00 ──
-    # Tangkap breakout di jam panas pembukaan bursa
-    # 09:00 = pre-breakout (data kemarin vs open hari ini)
-    # 09:15, 09:30, 09:45 = monitor progression
-    # 10:00 = konfirmasi final 1 jam pertama
-    _breakout_schedule = [
-        {"hour": 9,  "minute": 0,  "label": "09:00 Open"},
-        {"hour": 9,  "minute": 15, "label": "09:15"},
-        {"hour": 9,  "minute": 30, "label": "09:30"},
-        {"hour": 9,  "minute": 45, "label": "09:45"},
-        {"hour": 10, "minute": 0,  "label": "10:00 Konfirmasi"},
-    ]
-    for bs in _breakout_schedule:
-        scheduler.add_job(
-            func    = lambda lbl=bs["label"]: _breakout_job(lbl),
-            trigger = CronTrigger(
-                day_of_week = "mon-fri",
-                hour        = bs["hour"],
-                minute      = bs["minute"],
-                timezone    = WIB,
-            ),
-            id               = f"breakout_{bs['hour']:02d}{bs['minute']:02d}",
-            name             = f"Breakout Scan {bs['label']}",
-            replace_existing = True,
-            misfire_grace_time = 60,
-        )
-
-    # ── [MACD DIVERGENCE] Scan 2x sehari ────────────────────
-    _div_schedule = [
-        {"hour": 8,  "minute": 30, "label": "08:30 Pre-Market"},
-        {"hour": 15, "minute": 45, "label": "15:45 Post-Close"},
-    ]
-    for ds in _div_schedule:
-        scheduler.add_job(
-            func    = lambda lbl=ds["label"]: _macd_div_job(lbl),
-            trigger = CronTrigger(
-                day_of_week = "mon-fri",
-                hour        = ds["hour"],
-                minute      = ds["minute"],
-                timezone    = WIB,
-            ),
-            id               = f"macd_div_{ds['hour']:02d}{ds['minute']:02d}",
-            name             = f"MACD Div Scan {ds['label']}",
-            replace_existing = True,
-            misfire_grace_time = 120,
-        )
-
-    # ── [VWAP+EMA] Signal scan 3x sehari ────────────────────
-    _vwap_schedule = [
-        {"hour": 8,  "minute": 45, "label": "08:45 Pre-Market"},
-        {"hour": 11, "minute": 30, "label": "11:30 Mid-Session"},
-        {"hour": 15, "minute": 30, "label": "15:30 Post-Close"},
-    ]
-    for vs in _vwap_schedule:
-        scheduler.add_job(
-            func    = lambda lbl=vs["label"]: _vwap_ema_job(lbl),
-            trigger = CronTrigger(
-                day_of_week = "mon-fri",
-                hour        = vs["hour"],
-                minute      = vs["minute"],
-                timezone    = WIB,
-            ),
-            id               = f"vwap_ema_{vs['hour']:02d}{vs['minute']:02d}",
-            name             = f"VWAP+EMA Scan {vs['label']}",
-            replace_existing = True,
-            misfire_grace_time = 120,
-        )
 
     scheduler.start()
 
-    # Notifikasi startup
+    # Notifikasi startup (UPDATED 24 Aug 2026)
     send_telegram(
-        f"🟢 ATS SuperEngine {APP_VERSION} — SERVER ONLINE\n"
+        f"🟢 MARTIN LUKE SCANNER — SERVER ONLINE\n"
         f"⏰ {datetime.now(WIB).strftime('%Y-%m-%d %H:%M WIB')}\n"
-        f"Full scan: 09:05 | 09:30 | 11:30 | 13:35 | 15:00 WIB\n"
-        f"Intraday refresh: setiap 15 menit jam bursa\n"
-        f"🚀 Breakout scan: 09:00 | 09:15 | 09:30 | 09:45 | 10:00 WIB\n"
-        f"📊 VWAP+EMA scan: 08:45 | 11:30 | 15:30 WIB\n"
-        f"📈 MACD Div scan: 08:30 | 15:45 WIB\n"
-        f"⚡ Spike detection aktif — tidak akan ketinggalan pergerakan ✅"
+        f"✅ ONLY Martin Luke alerts active\n"
+        f"❌ Old ATS scanners disabled\n"
+        f"📊 Scan interval: Every 15 minutes (09:00-15:30 WIB)\n"
+        f"🎯 Alert threshold: Confluence Score ≥ 3/5\n"
+        f"📈 Setup: Pullback + EMA confirmation\n"
+        f"💰 Action: Clean, high-quality signals only"
     )
     return scheduler
 
@@ -5250,9 +5786,9 @@ with tabs[1]:
 
     # ── ROW 3: Threshold + intraday status (1 baris) ─────────
     row3_parts = []
-    if st.session_state.dynamic_thresholds:
-        th = st.session_state.dynamic_thresholds
-        row3_parts.append(
+    th = st.session_state.dynamic_thresholds or {}
+    if "execute_now" in th:          # [V6.5.4] jalur 0-kandidat: th hanya
+        row3_parts.append(           # berisi 'starvation' → jangan crash
             f"📊 EN≥{th['execute_now']:.0f} | EX≥{th['execute']:.0f} | RD≥{th['ready']:.0f}"
             f" *({th.get('n_samples',0)} kandidat)*"
         )
@@ -5378,7 +5914,29 @@ with tabs[1]:
             )
 
     elif st.session_state.scan_result is not None:
-        st.warning("⚠️ Tidak ada kandidat hari ini — market sedang tidak kondusif.")
+        # [V6.5.1] Banner "tidak kondusif" diganti panel bukti.
+        # Nol kandidat ≠ market jelek — bisa juga filter yang membunuh.
+        # Tunjukkan angkanya, biar vonisnya bisa diaudit, bukan dipercaya buta.
+        _starv = (st.session_state.get("dynamic_thresholds") or {}).get("starvation", {})
+        _regime_lbl = st.session_state.get("last_regime") or "-"
+        st.warning(
+            f"⚠️ 0 kandidat lolos hari ini — regime: {_regime_lbl} "
+            f"| status filter: {_starv.get('status', '-')}"
+        )
+        _top = _starv.get("top_reasons") or {}
+        if _top:
+            _dbg = st.session_state.get("debug_log")
+            _n_scan = len(_dbg) if _dbg is not None and hasattr(_dbg, "__len__") else "?"
+            st.caption(
+                "Penyebab gugur terbanyak (dari "
+                f"{_n_scan} ticker discan): "
+                + "  •  ".join(f"{k}: {v}" for k, v in _top.items())
+            )
+            st.caption(
+                "Detail per ticker ada di expander Debug Log / file scan log CSV. "
+                "Kalau satu filter membunuh >50% universe berhari-hari, "
+                "itu kandidat rekalibrasi — bukan kondisi market."
+            )
 
     # ── [Task 2] Score Breakdown — Explainability ────────────
     if (st.session_state.scan_result is not None and
