@@ -1,17 +1,16 @@
 # -*- coding: utf-8 -*-
 """
 MLX Trading Dashboard v5.4 - COMPLETE WITH JOURNAL & LEARNING
-- Full execution tracking with checkboxes
-- Auto-save to trade database
-- Complete table view with filters
-- Export executed trades to CSV
-- Learning system integration
-- Action-oriented UI for fast trading
+Full execution tracking with checkboxes
+Auto-save to trade database
+Complete table view with filters
+Export executed trades to CSV
+Learning system integration
+Action-oriented UI for fast trading
 """
 import sys
 import os
 from pathlib import Path
-
 script_dir = Path(__file__).resolve().parent
 parent_dir = script_dir.parent
 if str(parent_dir) not in sys.path:
@@ -20,16 +19,19 @@ os.chdir(str(parent_dir))
 
 import streamlit as st
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import List, Dict
+
+# Set Timezone to WIB (UTC+7)
+WIB = timezone(timedelta(hours=7))
 
 from ATS.core import DecisionResult, State, Decision
 from ATS.scanner import MLXBatchScanner
 from ATS.notification.telegram import TelegramNotifier
 
-# ═══════════════════════════════════════════════════════════════
+# ==========================================================
 # PAGE CONFIG
-# ══════════════════════════════════════════════════════════════
+# ==========================================================
 st.set_page_config(
     page_title="MLX Trading Dashboard v5.4",
     page_icon="📊",
@@ -37,9 +39,9 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ══════════════════════════════════════════════════════════════
+# ==========================================================
 # SESSION STATE INITIALIZATION
-# ═══════════════════════════════════════════════════════════════
+# ==========================================================
 if 'last_scan_time' not in st.session_state:
     st.session_state.last_scan_time = None
 if 'last_scan_count' not in st.session_state:
@@ -47,7 +49,7 @@ if 'last_scan_count' not in st.session_state:
 if 'signals' not in st.session_state:
     st.session_state.signals = []
 if 'last_refresh' not in st.session_state:
-    st.session_state.last_refresh = datetime.now()
+    st.session_state.last_refresh = datetime.now(WIB)
 if 'show_audit' not in st.session_state:
     st.session_state.show_audit = False
 if 'show_analytics' not in st.session_state:
@@ -59,28 +61,28 @@ if 'executed_trades' not in st.session_state:
 if 'selected_tickers' not in st.session_state:
     st.session_state.selected_tickers = {}
 
-# ══════════════════════════════════════════════════════════════
+# ==========================================================
 # TITLE
-# ══════════════════════════════════════════════════════════════
+# ==========================================================
 st.title("📊 MLX Trading Dashboard v5.4")
 st.subheader("Live Trading Signals + Journal + Learning System")
 
-# ══════════════════════════════════════════════════════════════
+# ==========================================================
 # HEADER METRICS
-# ══════════════════════════════════════════════════════════════
+# ==========================================================
 col_info1, col_info2, col_info3 = st.columns(3)
 with col_info1:
-    st.metric("🟢 Server Status", "ONLINE", delta="Ready")
+    st.metric("🟢 Server Status ", "ONLINE ", delta="Ready ")
 with col_info2:
-    st.metric("Version", "v5.4", delta="Latest")
+    st.metric("Version ", "v5.4 ", delta="Latest ")
 with col_info3:
-    st.metric("⏰ Current Time", datetime.now().strftime("%H:%M:%S"), delta="Live")
+    st.metric("⏰ Current Time ", datetime.now(WIB).strftime("%H:%M:%S"), delta="Live ")
 
 st.divider()
 
-# ═══════════════════════════════════════════════════════════════
+# ==========================================================
 # TELEGRAM INITIALIZATION
-# ═══════════════════════════════════════════════════════════════
+# ==========================================================
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 telegram_notifier = None
@@ -98,20 +100,20 @@ if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
 else:
     st.sidebar.warning("⚠️ Telegram credentials not set")
 
-# ═══════════════════════════════════════════════════════════════
+# ==========================================================
 # SIDEBAR CONTROLS
-# ═══════════════════════════════════════════════════════════════
+# ==========================================================
 with st.sidebar:
     st.title("⚙️ Controls")
     
     # SYSTEM STATUS
-    st.subheader("📊 System Status")
+    st.subheader(" System Status")
     status_cols = st.columns(2)
     with status_cols[0]:
         st.metric("Server", "🟢 ONLINE")
     with status_cols[1]:
         if st.session_state.last_scan_time:
-            time_diff = (datetime.now() - st.session_state.last_scan_time).seconds
+            time_diff = (datetime.now(WIB) - st.session_state.last_scan_time).seconds
             st.metric("Last Scan", f"{time_diff}s ago")
         else:
             st.metric("Last Scan", "Never")
@@ -131,8 +133,8 @@ with st.sidebar:
                 armed_signals = scanner.get_armed_signals(results)
                 
                 st.session_state.signals = armed_signals
-                st.session_state.last_refresh = datetime.now()
-                st.session_state.last_scan_time = datetime.now()
+                st.session_state.last_refresh = datetime.now(WIB)
+                st.session_state.last_scan_time = datetime.now(WIB)
                 st.session_state.last_scan_count = len(armed_signals)
                 
                 st.success(f"✅ SCAN COMPLETE! Found {len(armed_signals)} ARMED signals.")
@@ -140,11 +142,11 @@ with st.sidebar:
                 if telegram_notifier and armed_signals:
                     sent = telegram_notifier.send_armed_batch(armed_signals)
                     st.sidebar.success(f"📱 Sent {sent} Telegram alerts!")
-                
+                    
                 st.rerun()
         except Exception as e:
-            st.error(f"❌ Scan error: {str(e)}")
-    
+            st.error(f" Scan error: {str(e)}")
+            
     st.divider()
     
     # TELEGRAM RE-SEND
@@ -160,13 +162,13 @@ with st.sidebar:
                     except Exception as e:
                         st.error(f" Telegram error: {str(e)}")
                 else:
-                    st.warning("⚠️ No ARMED signals to send")
+                    st.warning("️ No ARMED signals to send")
             else:
                 st.error("❌ Telegram not configured")
         st.divider()
-    
+        
     # LEARNING SYSTEM
-    st.subheader("🧠 Learning System")
+    st.subheader(" Learning System")
     col1, col2 = st.columns(2)
     with col1:
         if st.button("Engine Audit", key="audit_btn", use_container_width=True):
@@ -177,7 +179,7 @@ with st.sidebar:
             
     if st.button(" Trade Summary", key="summary_btn", use_container_width=True):
         st.session_state.show_summary = True
-    
+        
     st.divider()
     
     # FILTERS
@@ -188,9 +190,9 @@ with st.sidebar:
     st.divider()
     st.caption(f"Last refresh: {st.session_state.last_refresh.strftime('%H:%M:%S')}")
 
-# ═══════════════════════════════════════════════════════════════
+# ==========================================================
 # LEARNING SYSTEM - GRACEFUL HANDLING
-# ══════════════════════════════════════════════════════════════
+# ==========================================================
 def safe_import_learning_system():
     try:
         from ATS.trade_database import TradeDatabase
@@ -204,9 +206,8 @@ def safe_import_learning_system():
 if st.session_state.get('show_audit', False):
     st.subheader("🔍 Engine Audit Report")
     TradeDatabase, EngineAudit = safe_import_learning_system()
-    
     if TradeDatabase is None:
-        st.info("📝 **Engine Audit belum tersedia.**\n\nFitur ini memerlukan modul `trade_database.py` dan `engine_audit.py`. Fitur utama (Scanner + Telegram) sudah berjalan normal.")
+        st.info(" **Engine Audit belum tersedia.**\n\nFitur ini memerlukan modul `trade_database.py` dan `engine_audit.py`. Fitur utama (Scanner + Telegram) sudah berjalan normal.")
     else:
         try:
             db = TradeDatabase()
@@ -233,49 +234,42 @@ if st.session_state.get('show_audit', False):
 if st.session_state.get('show_analytics', False):
     st.subheader(" Win Rate Analytics")
     TradeDatabase, _ = safe_import_learning_system()
-    
     if TradeDatabase is None:
         st.info("📝 **Analytics belum tersedia.**\n\nFitur ini memerlukan modul `trade_database.py`. Fitur utama (Scanner + Telegram) sudah berjalan normal.")
     else:
         try:
             db = TradeDatabase()
             tab1, tab2, tab3 = st.tabs(["By Confidence", "By Regime", "By Sector"])
-            
             with tab1:
                 st.write("**Win Rate by Confidence Level**")
                 by_conf = db.get_stats_by_confidence()
                 if by_conf:
                     for conf_level, stats in by_conf.items():
-                        if stats is None:
-                            continue
+                        if stats is None: continue
                         col1, col2, col3, col4 = st.columns(4)
                         with col1: st.metric(conf_level, f"{stats.get('win_rate', 0):.1f}%")
                         with col2: st.metric("Trades", stats.get('count', 0))
                         with col3: st.metric("Wins", stats.get('wins', 0))
                         with col4: st.metric("Avg Return", f"{stats.get('avg_return', 0):+.2f}%")
                 else: st.info("No data yet")
-                
             with tab2:
                 st.write("**Win Rate by Market Regime**")
                 by_regime = db.get_stats_by_regime()
                 if by_regime:
                     for regime, stats in by_regime.items():
-                        if stats is None:
-                            continue
+                        if stats is None: continue
                         col1, col2, col3, col4 = st.columns(4)
                         with col1: st.metric(regime, f"{stats.get('win_rate', 0):.1f}%")
                         with col2: st.metric("Trades", stats.get('count', 0))
                         with col3: st.metric("Wins", stats.get('wins', 0))
                         with col4: st.metric("Avg RR", f"{stats.get('avg_rr', 0):.2f}x")
                 else: st.info("No data yet")
-                
             with tab3:
                 st.write("**Win Rate by Sector**")
                 by_sector = db.get_stats_by_sector()
                 if by_sector:
                     for sector, stats in by_sector.items():
-                        if stats is None:
-                            continue
+                        if stats is None: continue
                         col1, col2, col3, col4 = st.columns(4)
                         with col1: st.metric(sector, f"{stats.get('win_rate', 0):.1f}%")
                         with col2: st.metric("Trades", stats.get('count', 0))
@@ -290,7 +284,6 @@ if st.session_state.get('show_analytics', False):
 if st.session_state.get('show_summary', False):
     st.subheader("📊 Trade Summary")
     TradeDatabase, _ = safe_import_learning_system()
-    
     if TradeDatabase is None:
         st.info("📝 **Trade Summary belum tersedia.**\n\nFitur ini memerlukan modul `trade_database.py`. Fitur utama (Scanner + Telegram) sudah berjalan normal.")
     else:
@@ -308,9 +301,9 @@ if st.session_state.get('show_summary', False):
             st.warning(f"⚠️ Trade Summary belum siap: {str(e)[:80]}")
     st.session_state.show_summary = False
 
-# ═══════════════════════════════════════════════════════════════
+# ==========================================================
 # MAIN DISPLAY - TRADING SIGNALS WITH INLINE CHECKBOXES
-# ══════════════════════════════════════════════════════════════
+# ==========================================================
 st.divider()
 
 if not st.session_state.signals:
@@ -334,19 +327,19 @@ else:
     # Summary metrics
     col1, col2, col3, col4, col5 = st.columns(5)
     with col1: st.metric("🟢 ARMED", armed)
-    with col2: st.metric("🟡 CAUTION", caution)
+    with col2: st.metric(" CAUTION", caution)
     with col3: st.metric("🔵 READY", ready)
     with col4: st.metric("⚪ MONITOR", monitor)
     with col5:
         avg_conf = sum(s.confidence for s in filtered_signals) / len(filtered_signals) if filtered_signals else 0
         st.metric("Avg Confidence", f"{avg_conf:.0f}%")
-    
+        
     st.divider()
     
     # ARMED SIGNALS - ACTION ORIENTED
     armed_signals = [s for s in filtered_signals if s.state == State.ARMED]
     if armed_signals:
-        st.subheader(f"🔥 EXECUTE TRADES - {len(armed_signals)} ARMED Signals")
+        st.subheader(f" EXECUTE TRADES - {len(armed_signals)} ARMED Signals")
         st.caption("✅ Centang kolom 'Pilih' untuk menandai ticker yang akan di-entry")
         
         # Filter options
@@ -361,7 +354,7 @@ else:
             if st.button("🗑️ Clear All", key="clear_all"):
                 st.session_state.selected_tickers = {}
                 st.rerun()
-        
+                
         # Apply filter
         if show_filter == "Selected":
             display_signals = [s for s in armed_signals if s.ticker in st.session_state.selected_tickers]
@@ -369,7 +362,7 @@ else:
             display_signals = [s for s in armed_signals if s.ticker in st.session_state.executed_trades]
         else:
             display_signals = armed_signals
-        
+            
         if not display_signals:
             st.info("No signals to display with current filter.")
         else:
@@ -394,9 +387,9 @@ else:
                     "Engines": f"{signal.positive_engines}/9",
                     "Risk%": f"{signal.risk_pct:.1f}%",
                     "Reward%": f"{signal.reward_pct:.1f}%",
-                    "Status": "✅ Journal" if is_executed else ("☑️ Selected" if is_selected else "☐")
+                    "Status": "✅ Journal" if is_executed else ("️ Selected" if is_selected else "☐")
                 })
-            
+                
             df = pd.DataFrame(table_data)
             
             # Configure column types for data_editor
@@ -440,15 +433,16 @@ else:
                         if s.ticker == ticker:
                             st.session_state.selected_tickers[ticker] = s
                             break
-            
+                            
             for ticker in previous_selected:
                 if ticker not in selected_tickers_now and ticker not in st.session_state.executed_trades:
                     if ticker in st.session_state.selected_tickers:
                         del st.session_state.selected_tickers[ticker]
-            
+                        
             # Action buttons
             st.divider()
             col_btn1, col_btn2, col_btn3 = st.columns(3)
+            
             with col_btn1:
                 if st.button("📝 Add Selected to Journal", type="primary", key="add_to_journal"):
                     if st.session_state.selected_tickers:
@@ -472,9 +466,8 @@ else:
                                         )
                                         db.close()
                                         saved_count += 1
-                                        
                                         st.session_state.executed_trades[ticker] = {
-                                            "timestamp": datetime.now(),
+                                            "timestamp": datetime.now(WIB),
                                             "entry_price": signal.entry_price,
                                             "confidence": signal.confidence,
                                             "signal": signal
@@ -487,15 +480,15 @@ else:
                         st.rerun()
                     else:
                         st.warning("⚠️ Please select at least one ticker")
-                
+                        
             with col_btn2:
                 selected_count = len(st.session_state.selected_tickers)
                 st.metric("Selected", f"{selected_count} tickers")
-            
+                
             with col_btn3:
                 executed_count = len(st.session_state.executed_trades)
                 st.metric("In Journal", f"{executed_count}")
-            
+                
             # Export button
             if executed_count > 0:
                 if st.button("📥 Export Journal to CSV", key="export_exec"):
@@ -515,16 +508,15 @@ else:
                             "Engines": f"{signal.positive_engines}/9",
                             "Regime": signal.regime.value if signal.regime else "UNKNOWN"
                         })
-                    
                     export_df = pd.DataFrame(executed_df)
                     csv = export_df.to_csv(index=False)
                     st.download_button(
                         label="📥 Download CSV",
                         data=csv,
-                        file_name=f"trading_journal_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                        file_name=f"trading_journal_{datetime.now(WIB).strftime('%Y%m%d_%H%M')}.csv",
                         mime="text/csv"
                     )
-    
+
     # ACTIVE TRADES - SHOW JOURNAL TRADES (MAX 20, AUTO-ROLL)
     if st.session_state.executed_trades:
         st.divider()
@@ -543,7 +535,7 @@ else:
         if len(executed_list) > max_trades:
             executed_list = executed_list[:max_trades]
             st.info(f"️ Showing latest {max_trades} trades. Older trades are rolled out.")
-        
+            
         # Build table for active trades
         active_trades_data = []
         for idx, (ticker, data) in enumerate(executed_list, 1):
@@ -558,9 +550,9 @@ else:
                 "Confidence": f"{signal.confidence:.0f}%",
                 "R:R": f"1:{signal.reward_risk_ratio:.1f}",
                 "Engines": f"{signal.positive_engines}/9",
-                "Status": "🟢 Active"
+                "Status": " Active"
             })
-        
+            
         # Display active trades table
         st.dataframe(
             pd.DataFrame(active_trades_data),
@@ -575,7 +567,7 @@ else:
                 st.session_state.executed_trades = {}
                 st.success("✅ All active trades cleared!")
                 st.rerun()
-        
+                
         with col_act2:
             if st.button("📥 Export Active Trades", key="export_active"):
                 export_df = []
@@ -591,16 +583,15 @@ else:
                         "R:R": f"1:{signal.reward_risk_ratio:.1f}",
                         "Engines": f"{signal.positive_engines}/9"
                     })
-                
                 export_df = pd.DataFrame(export_df)
                 csv = export_df.to_csv(index=False)
                 st.download_button(
                     label="📥 Download CSV",
                     data=csv,
-                    file_name=f"active_trades_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                    file_name=f"active_trades_{datetime.now(WIB).strftime('%Y%m%d_%H%M')}.csv",
                     mime="text/csv"
                 )
-    
+
     # CAUTION SIGNALS
     caution_signals = [s for s in filtered_signals if s.state == State.CAUTION_HALF_SIZE]
     if caution_signals:
@@ -614,7 +605,7 @@ else:
             'R:R': [f"{s.reward_risk_ratio:.2f}x" for s in caution_signals],
         })
         st.dataframe(caution_df, use_container_width=True)
-    
+
     # MONITOR SIGNALS
     monitor_signals = [s for s in filtered_signals if s.state == State.MONITOR]
     if monitor_signals:
@@ -626,8 +617,20 @@ else:
             })
             st.dataframe(monitor_df, use_container_width=True)
 
-# ═══════════════════════════════════════════════════════════════
-# FOOTER
-# ═══════════════════════════════════════════════════════════════
+# ==========================================================
+# FOOTER - ATLAS QUANT
+# ==========================================================
 st.divider()
-st.caption("Dashboard v5.4 | Journal + Learning System | Ready for Paper Trading ✅")
+st.markdown("""
+<div style='text-align: center; padding: 15px 10px; font-family: monospace;'>
+    <p style='font-size: 14px; font-weight: bold; color: #ffffff; margin: 5px 0; letter-spacing: 1px;'>
+        MLX SuperEngine v5.4
+    </p>
+    <p style='font-size: 11px; margin: 5px 0; color: #aaaaaa;'>
+        Engine Scan Saham Syariah | Live Trading Signals + Journal + Learning System
+    </p>
+    <p style='font-size: 11px; margin: 5px 0; color: #888;'>
+        Created by © TSN 2026
+    </p>
+</div>
+""", unsafe_allow_html=True)
